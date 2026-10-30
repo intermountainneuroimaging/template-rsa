@@ -5,5 +5,7 @@
 #SBATCH --cpus-per-task=1
 set -euo pipefail
 cd "$REPO"
-$PYTHON workflows/group_rsa.py --config "$CONFIG"
+ANALYSES=$($PYTHON -c "import json,sys; print(' '.join(json.load(open(sys.argv[1])).get('pipeline',{}).get('analyses',['rdm'])))" "$CONFIG")
+[[ " $ANALYSES " == *" rdm "* ]] && $PYTHON workflows/group_rsa.py --config "$CONFIG"
+[[ " $ANALYSES " == *" template "* ]] && $PYTHON workflows/group_template_rsa.py --config "$CONFIG"
 $PYTHON workflows/generate_report.py --config "$CONFIG"

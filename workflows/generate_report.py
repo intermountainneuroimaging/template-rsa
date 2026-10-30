@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import datetime
+import json
 import glob
 import os
 import sys
@@ -36,8 +37,8 @@ import pandas as pd  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import build_model_rdms, item_names, load_config, pattern_index_path, subject_dir  # noqa: E402
-from utils.rsa_plots import draw_mds, draw_models, draw_rdm, draw_weights  # noqa: E402
+from utils.rsa_common import build_model_rdms, item_names, load_config, pattern_index_path, safe_name, subject_dir  # noqa: E402
+from utils.rsa_plots import draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_weights  # noqa: E402
 
 PAGE = (8.5, 11)
 
@@ -219,6 +220,45 @@ def subject_rdm_grid(pdf, output_dir, roi, subjects):
     plt.close(fig)
 
 
+def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
+    """Group mean pattern-level RDM (one large panel), then every subject's pattern-level RDM."""
+    from utils.rsa_common import pattern_rdm_method
+
+    method = pattern_rdm_method(cfg["rdm"])
+    mean = read_csv(os.path.join(output_dir, "group", f"roi-{roi}", f"group_roi-{roi}_mean-pattern-rdm.csv"),
+                    index_col=0)
+    if mean is not None:
+        fig, ax = plt.subplots(figsize=PAGE)
+        draw_pattern_rdm(ax, mean, f"{roi}: every pattern, mean over subjects ({method}, "
+                                   f"{len(mean)} patterns matched by item and position)")
+        ax.set_box_aspect(1)
+        fig.suptitle(f"ROI: {roi} -- pattern-level RDM", fontsize=13, weight="bold")
+        fig.text(0.07, 0.04, textwrap.fill(
+            "Rows/columns are single patterns (each item x run, or each trial), grouped by item; nothing is "
+            "averaged within an item. Item structure shows as dark diagonal blocks; run effects or drift show "
+            "as stripes. The item-level RDM averages these blocks.", 110), fontsize=8)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    frames = []
+    for s in subjects:
+        f = read_csv(os.path.join(subject_dir(output_dir, s), "rsa", f"roi-{roi}",
+                                  f"sub-{s}_roi-{roi}_pattern-rdm.csv"), index_col=0)
+        if f is not None:
+            frames.append((s, f))
+    for page_start in range(0, len(frames), 6):
+        chunk = frames[page_start:page_start + 6]
+        fig, axes = plt.subplots(3, 2, figsize=PAGE, squeeze=False)
+        for ax, (s, f) in zip(axes.flat, chunk):
+            draw_pattern_rdm(ax, f, f"sub-{s} (n={len(f)})", colorbar=False, line_width=0.3)
+        for ax in list(axes.flat)[len(chunk):]:
+            ax.axis("off")
+        fig.suptitle(f"{roi}: subject pattern-level RDMs ({method})", fontsize=13, weight="bold")
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
 def roi_group_pages(pdf, cfg, output_dir, roi, subjects):
     prefix = os.path.join(output_dir, "group", f"roi-{roi}", f"group_roi-{roi}")
     mean = read_csv(prefix + "_mean-rdm.csv", index_col=0)
@@ -273,6 +313,7 @@ def roi_group_pages(pdf, cfg, output_dir, roi, subjects):
             tables.append(("Weights (fit on all subjects)", weights))
     table_page(pdf, f"ROI: {roi} -- statistics", tables)
     subject_rdm_grid(pdf, output_dir, roi, subjects)
+    pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects)
 
 
 def roi_subject_page(pdf, cfg, output_dir, roi, subject):
@@ -281,6 +322,7 @@ def roi_subject_page(pdf, cfg, output_dir, roi, subject):
     if rdm is None:
         return
     sims = read_csv(os.path.join(base, f"sub-{subject}_model-comparison.csv"), dtype={"subject": str})
+    pattern = read_csv(os.path.join(base, f"roi-{roi}", f"sub-{subject}_roi-{roi}_pattern-rdm.csv"), index_col=0)
     fig = plt.figure(figsize=PAGE)
     fig.suptitle(f"sub-{subject}, ROI: {roi}", fontsize=14, weight="bold")
     gs = fig.add_gridspec(2, 2, hspace=0.5, wspace=0.35)
@@ -294,6 +336,86 @@ def roi_subject_page(pdf, cfg, output_dir, roi, subject):
                     f"RDM similarity ({cfg['comparison']['method']})")
     pdf.savefig(fig)
     plt.close(fig)
+    if pattern is not None:
+        from utils.rsa_common import pattern_rdm_method
+        fig, ax = plt.subplots(figsize=PAGE)
+        draw_pattern_rdm(ax, pattern, f"sub-{subject} {roi}: every pattern ({pattern_rdm_method(cfg['rdm'])}, "
+                                      f"n={len(pattern)})")
+        ax.set_box_aspect(1)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def template_summary_lines(cfg) -> list:
+    from workflows.template_rsa import target_specs
+    tr = cfg["template_rsa"]
+    fw = tr["feature_weighting"]
+    cm = fw["category_mask"]
+    lines = ["", "template RSA (docs/lab_methods.md):",
+             f"  items:        {tr['item_column']} (category {tr['category_column']}, subcategory {tr['subcategory_column']})",
+             f"  ROIs:         {', '.join(tr['rois'] or list(cfg['rois']))}",
+             f"  templates:    {json.dumps(tr['templates']['events'])}",
+             f"  weighting:    levels {fw['levels']}, item contrast {fw['item_contrast']}, category mask "
+             + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off")]
+    for name, spec in target_specs(cfg).items():
+        lines.append(f"  target {name}: {spec['mode']}, group_by {spec['group']['group_by']}")
+    return lines
+
+
+def template_pages(pdf, cfg, output_dir):
+    from utils.rsa_plots import draw_template_bars, draw_template_timecourse
+    from workflows.template_rsa import target_specs
+
+    gdir = os.path.join(output_dir, "group", "template_rsa")
+    for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
+        val = read_csv(os.path.join(gdir, f"roi-{roi}_template-validation.csv"), dtype={"subject": str})
+        tables = []
+        if val is not None and len(val):
+            tables.append(("Template validation (leave-one-event-out), mean z over subjects",
+                           val.groupby(["level", "comparison"])["z"].agg(["mean", "sem", "count"]).reset_index()))
+        for name, spec in target_specs(cfg).items():
+            g = spec["group"]
+            prefix = os.path.join(gdir, f"roi-{roi}_target-{safe_name(name)}")
+            if spec["mode"] == "timecourse":
+                summary = read_csv(prefix + "_timecourse.csv")
+                if summary is None:
+                    continue
+                measures = [m for m in ("raw", "baseline_corrected", "minus_reference") if m in set(summary["measure"])]
+                comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
+                for level in dict.fromkeys(summary["level"]):
+                    fig, axes = plt.subplots(len(measures), len(comps), figsize=PAGE, squeeze=False)
+                    for i, measure in enumerate(measures):
+                        for j, comp in enumerate(comps):
+                            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, measure,
+                                                     f"{comp} | {measure}", g.get("window_trs"))
+                    fig.suptitle(f"ROI {roi}: {name} -- {level}-weighted templates", fontsize=12, weight="bold")
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                blocks = read_csv(prefix + "_block-stats.csv")
+                if blocks is not None and len(blocks):
+                    keep = blocks[(blocks["measure"] != "raw") | (blocks["measure"].nunique() == 1)]
+                    tables.append((f"{name}: window-block tests", keep.drop(columns=["roi", "tr_start", "tr_stop"], errors="ignore")))
+            else:
+                subj = read_csv(prefix + "_subject-means.csv", dtype={"subject": str})
+                if subj is None:
+                    continue
+                levels = list(dict.fromkeys(subj["level"]))
+                fig, axes = plt.subplots(len(levels), 1, figsize=PAGE, squeeze=False)
+                for ax, level in zip(axes.flat, levels):
+                    draw_template_bars(ax, subj[subj["level"] == level], [c for c in g["comparisons"] if c in set(subj["comparison"])],
+                                       f"{level}-weighted templates")
+                fig.suptitle(f"ROI {roi}: {name}", fontsize=12, weight="bold")
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+                tables.append((f"{name}: comparison sets (paired t)", read_csv(prefix + "_comparison-tests.csv")))
+                tables.append((f"{name}: contrasts", read_csv(prefix + "_contrasts.csv")))
+            mm = read_csv(prefix + "_mixed-models.csv")
+            if mm is not None and len(mm):
+                tables.append((f"{name}: mixed models", mm.drop(columns=["roi", "formula", "re_formula"], errors="ignore")))
+        if tables:
+            table_page(pdf, f"ROI {roi}: template RSA statistics", tables)
 
 
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
@@ -307,17 +429,22 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
         out = os.path.join(output_dir, "group", "rsa_report.pdf")
     os.makedirs(os.path.dirname(out), exist_ok=True)
 
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    lines = summary_lines(cfg, subjects) + (template_summary_lines(cfg) if "template" in analyses else [])
     with PdfPages(out) as pdf:
-        text_page(pdf, "RSA report" + (f": sub-{subject}" if subject else ""), summary_lines(cfg, subjects))
+        text_page(pdf, "RSA report" + (f": sub-{subject}" if subject else ""), lines)
         table_page(pdf, "Data inventory", [("Patterns per item", inventory(output_dir, subjects, items)),
                                            ("Run QC: confounds and censoring", run_qc(output_dir, subjects))],
                    max_rows=60)
-        model_rdm_page(pdf, cfg)
-        for roi in cfg["rois"]:
-            if subject:
-                roi_subject_page(pdf, cfg, output_dir, roi, subject)
-            else:
-                roi_group_pages(pdf, cfg, output_dir, roi, subjects)
+        if "rdm" in analyses:
+            model_rdm_page(pdf, cfg)
+            for roi in cfg["rois"]:
+                if subject:
+                    roi_subject_page(pdf, cfg, output_dir, roi, subject)
+                else:
+                    roi_group_pages(pdf, cfg, output_dir, roi, subjects)
+        if "template" in analyses and not subject:
+            template_pages(pdf, cfg, output_dir)
     print(f"Wrote {out}")
     return out
 

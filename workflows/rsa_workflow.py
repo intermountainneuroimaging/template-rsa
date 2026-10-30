@@ -16,6 +16,8 @@ model-similarity map per model in the subject's native space.
 
 Outputs (under <output_dir>/sub-<subject>/rsa/):
   roi-<roi>/sub-<s>_roi-<roi>_rdm.{csv,hdf5,png}
+  roi-<roi>/sub-<s>_roi-<roi>_pattern-rdm.{csv,png}   (rdm.pattern_rdm.enabled: every pattern,
+                                                       item x run or trial, not averaged)
   sub-<s>_model-comparison.csv
   searchlight/sub-<s>_model-<model>_searchlight.nii.gz
 
@@ -34,10 +36,11 @@ from nilearn.maskers import NiftiMasker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
-    build_dataset, build_model_rdms, clean_measurements, compute_data_rdm, format_pattern,
-    item_names, load_config, pattern_index_path, rdm_to_frame, subject_dir,
+    build_dataset, build_model_rdms, clean_measurements, compute_data_rdm, compute_pattern_rdm,
+    format_pattern, item_names, load_config, pattern_index_path, pattern_labels, pattern_rdm_method,
+    rdm_to_frame, resolve_roi_mask, sort_pattern_index, subject_dir,
 )
-from utils.rsa_plots import plot_rdm
+from utils.rsa_plots import plot_pattern_rdm, plot_rdm
 
 
 def load_pattern_index(output_dir: str, subject: str, items: list) -> pd.DataFrame:
@@ -45,7 +48,7 @@ def load_pattern_index(output_dir: str, subject: str, items: list) -> pd.DataFra
     if not os.path.exists(path):
         raise SystemExit(f"{path} not found -- run estimate_patterns.py for subject {subject} first")
     index = pd.read_csv(path, dtype={"subject": str, "run": str, "run_id": str, "item": str})
-    index = index[index["item"].isin(items)].reset_index(drop=True)
+    index = sort_pattern_index(index[index["item"].isin(items)], items)
     missing = [i for i in items if i not in set(index["item"])]
     if missing:
         print(f"  (!) sub-{subject}: no patterns for item(s) {missing}; they are dropped from this subject's RDMs")
@@ -56,8 +59,7 @@ def roi_rsa(cfg, subject, roi_name, roi_cfg, index, model_rdms, out_dir):
     import rsatoolbox
 
     items = item_names(cfg)
-    mask_path = format_pattern(roi_cfg["mask_pattern"], subject=subject)
-    masker = NiftiMasker(mask_img=mask_path).fit()
+    masker = NiftiMasker(mask_img=resolve_roi_mask(roi_cfg, subject, index["pattern_file"].iloc[0])).fit()
     raw = masker.transform(index["pattern_file"].tolist())
     data, kept = clean_measurements(raw)
     n_dropped = int((~kept).sum())
@@ -78,6 +80,14 @@ def roi_rsa(cfg, subject, roi_name, roi_cfg, index, model_rdms, out_dir):
     frame.to_csv(prefix + ".csv")
     rdm.save(prefix + ".hdf5", file_type="hdf5", overwrite=True)
     plot_rdm(frame, f"sub-{subject} {roi_name} ({cfg['rdm']['method']}, {data.shape[1]} vox)", prefix + ".png")
+
+    if cfg["rdm"]["pattern_rdm"]["enabled"]:
+        labels = pattern_labels(index)
+        pattern_frame = pd.DataFrame(compute_pattern_rdm(dataset, cfg["rdm"]), index=labels, columns=labels)
+        pattern_prefix = os.path.join(roi_dir, f"sub-{subject}_roi-{roi_name}_pattern-rdm")
+        pattern_frame.to_csv(pattern_prefix + ".csv")
+        plot_pattern_rdm(pattern_frame, f"sub-{subject} {roi_name}: every pattern "
+                         f"({pattern_rdm_method(cfg['rdm'])}, n={len(labels)})", pattern_prefix + ".png")
 
     rows = []
     if model_rdms is not None:

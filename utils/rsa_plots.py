@@ -29,6 +29,45 @@ def draw_rdm(ax, matrix: pd.DataFrame, title: str, cmap: str = "viridis", colorb
     return im
 
 
+def item_blocks(labels) -> list:
+    """[(item, start, stop)] for consecutive runs of the same item in 'item|run[|trial]' labels."""
+    items = [str(label).split("|")[0] for label in labels]
+    blocks, start = [], 0
+    for i in range(1, len(items) + 1):
+        if i == len(items) or items[i] != items[start]:
+            blocks.append((items[start], start, i))
+            start = i
+    return blocks
+
+
+def draw_pattern_rdm(ax, matrix: pd.DataFrame, title: str, cmap: str = "viridis", colorbar: bool = True,
+                     labels: bool = True, line_width: float = 0.6):
+    """Pattern-level RDM (rows = single patterns grouped by item): white lines between item
+    blocks, item names centered on each block instead of one tick per pattern. Color limits
+    are the 1st-99th percentile of off-diagonal values so the zero diagonal doesn't wash out
+    the structure."""
+    values = matrix.values
+    off = values[~np.eye(len(values), dtype=bool)]
+    vmin, vmax = (np.nanpercentile(off, [1, 99]) if off.size else (None, None))
+    im = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
+    blocks = item_blocks(matrix.index)
+    for _, _, stop in blocks[:-1]:
+        ax.axhline(stop - 0.5, color="white", lw=line_width)
+        ax.axvline(stop - 0.5, color="white", lw=line_width)
+    if labels:
+        centers = [(start + stop - 1) / 2 for _, start, stop in blocks]
+        names = [item for item, _, _ in blocks]
+        ax.set_xticks(centers, names, rotation=90, fontsize=7)
+        ax.set_yticks(centers, names, fontsize=7)
+        ax.tick_params(length=0)
+    else:
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title(title, fontsize=9)
+    if colorbar:
+        ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="dissimilarity")
+    return im
+
+
 def draw_mds(ax, matrix: pd.DataFrame, title: str):
     from sklearn.manifold import MDS
 
@@ -96,6 +135,12 @@ def plot_rdm(matrix: pd.DataFrame, title: str, out_path: str, cmap: str = "virid
     _save(fig, out_path)
 
 
+def plot_pattern_rdm(matrix: pd.DataFrame, title: str, out_path: str, cmap: str = "viridis"):
+    fig, ax = plt.subplots(figsize=(7, 6.2))
+    draw_pattern_rdm(ax, matrix, title, cmap)
+    _save(fig, out_path)
+
+
 def plot_mds(matrix: pd.DataFrame, title: str, out_path: str):
     fig, ax = plt.subplots(figsize=(4.5, 4.5))
     draw_mds(ax, matrix, title)
@@ -111,4 +156,66 @@ def plot_models(per_model: pd.DataFrame, nc, title: str, ylabel: str, out_path: 
 def plot_weights(weights: pd.DataFrame, title: str, out_path: str):
     fig, ax = plt.subplots(figsize=(2.5 + 0.8 * weights["component"].nunique(), 1.8 + 0.5 * weights["model"].nunique()))
     draw_weights(ax, weights, title)
+    _save(fig, out_path)
+
+
+def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, measure: str, title: str, window_trs=None):
+    """Lines = groups (mean +- SEM ribbon) of one comparison set over TR offsets; grey span = test window."""
+    part = summary[(summary["comparison"] == comparison) & (summary["measure"] == measure)]
+    for grp, gpart in part.groupby("group"):
+        gpart = gpart.sort_values("time_s")
+        ax.plot(gpart["time_s"], gpart["mean"], label=grp, lw=1.5)
+        ax.fill_between(gpart["time_s"], gpart["mean"] - gpart["sem"], gpart["mean"] + gpart["sem"], alpha=0.25)
+    if window_trs and len(part):
+        step = part["time_s"].diff().dropna()
+        step = float(step[step > 0].min()) if (step > 0).any() else 1.0
+        ax.axvspan(window_trs[0] * step, window_trs[1] * step, color="0.9", zorder=0)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xlabel("time from window start (s)", fontsize=8)
+    ax.set_ylabel("similarity (Fisher z)", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.legend(fontsize=7, frameon=False)
+
+
+def plot_template_timecourse(summary: pd.DataFrame, g: dict, title: str, out_path: str):
+    measures = [m for m in ("raw", "baseline_corrected", "minus_reference") if m in set(summary["measure"])]
+    keys = summary[["level"]].drop_duplicates()["level"].tolist()
+    comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
+    fig, axes = plt.subplots(len(keys) * len(measures), len(comps), squeeze=False,
+                             figsize=(3.6 * len(comps), 2.8 * len(keys) * len(measures)))
+    for i, (level, measure) in enumerate([(l, m) for l in keys for m in measures]):
+        for j, comp in enumerate(comps):
+            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, measure,
+                                     f"{level} | {comp} | {measure}", g.get("window_trs"))
+    fig.suptitle(title, fontsize=11)
+    _save(fig, out_path)
+
+
+def draw_template_bars(ax, subj: pd.DataFrame, comparisons: list, title: str):
+    """Bars = group x comparison means (+- SEM over subjects), dots = subjects."""
+    groups = list(dict.fromkeys(subj["group"]))
+    width = 0.8 / max(len(comparisons), 1)
+    for j, comp in enumerate(comparisons):
+        for i, grp in enumerate(groups):
+            vals = subj[(subj["group"] == grp) & (subj["comparison"] == comp)]["z"].dropna()
+            if vals.empty:
+                continue
+            x = i + (j - (len(comparisons) - 1) / 2) * width
+            ax.bar(x, vals.mean(), width=width * 0.9, yerr=vals.sem() if len(vals) > 1 else None, capsize=2,
+                   color=f"C{j}", label=comp if i == 0 else None)
+            ax.scatter(np.full(len(vals), x), vals, s=6, color="k", zorder=3)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xticks(range(len(groups)), groups, rotation=30, ha="right", fontsize=7)
+    ax.set_ylabel("similarity (Fisher z)", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.legend(fontsize=7, frameon=False)
+
+
+def plot_template_bars(subj: pd.DataFrame, g: dict, title: str, out_path: str):
+    levels = list(dict.fromkeys(subj["level"]))
+    comps = [c for c in g["comparisons"] if c in set(subj["comparison"])]
+    fig, axes = plt.subplots(1, len(levels), squeeze=False, figsize=(1.5 + 0.9 * subj["group"].nunique() * len(levels) + 2, 3.8))
+    for ax, level in zip(axes.flat, levels):
+        draw_template_bars(ax, subj[subj["level"] == level], comps, f"{level}-weighted templates")
+    fig.suptitle(title, fontsize=11)
     _save(fig, out_path)

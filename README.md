@@ -25,12 +25,14 @@ rsaworkflow/
 │   ├── estimate_patterns.py             # stage 2: one pattern image per item x run, or per trial (LSA / LSS)
 │   ├── rsa_workflow.py                  # stage 3: subject RDMs per ROI / searchlight + model comparison
 │   ├── group_rsa.py                     # stage 4: mean RDM, MDS, noise ceiling, group inference, weighted models
+│   ├── template_rsa.py                  # stage 3t: feature-weighted item-template RSA (lab method; docs/lab_methods.md)
+│   ├── group_template_rsa.py            # stage 4t: template-RSA timecourses, contrasts, mixed models
 │   ├── generate_report.py               # stage 5: multi-page PDF report (group, or one subject)
 │   └── run_pipeline.py                  # all stages locally, from one config
 ├── slurm/                         # same stages as chained SLURM jobs (0_submit_rsa_pipeline.sh)
 ├── tutorial/                      # Haxby 2001 validation dataset: fetch script, configs, results
 ├── examples/                      # fMRIPrep study template; working-memory skeleton config
-├── docs/                          # design notes (working_memory_rsa.md)
+├── docs/                          # lab_methods.md (Kim 2020 / Bretton 2024, formalized + mapped), working_memory_rsa.md
 └── tests/                         # unit tests + synthetic end-to-end test
 ```
 
@@ -92,6 +94,8 @@ Relative paths in the config are resolved against the directory you run from (th
    - Computes the RDM with `rdm.method`: patterns of the same item are averaged, or cross-validated over `cv_descriptor` folds for crossnobis and poisson_cv.
    - Compares the RDM with each model RDM.
 
+   It also writes a **pattern-level RDM** (`rdm.pattern_rdm`, on by default). Every single pattern (each item × run, or each trial) gets its own row, grouped by item, and nothing is averaged. This view shows item structure as diagonal blocks and exposes run effects, drift and outlier runs as stripes, all of which the item RDM hides. Cross-validated distances don't apply to single patterns, so it uses `rdm.pattern_rdm.method`, or `rdm.method` if that is correlation, Euclidean or Mahalanobis, and falls back to correlation otherwise.
+
    The optional searchlight writes one native-space model-fit map per model.
 5. **Group** (`group`). Computes the mean RDM and an MDS plot, plus a leave-one-subject-out noise ceiling (Nili et al., 2014). Models are tested against 0 and against each other with one of three methods:
    - `ttest`: subject random effects.
@@ -106,6 +110,7 @@ Relative paths in the config are resolved against the directory you run from (th
    - Pattern inventory: patterns per subject and item.
    - The model RDMs.
    - For each ROI: the mean RDM, MDS, fixed and cross-validated model fits with noise ceiling, weights, statistics tables, and every subject's RDM.
+   - For each ROI: the pattern-level RDM averaged over subjects (patterns matched by item and by position within the item's block, so trial-level data average too), followed by every subject's pattern-level RDM.
 
    The `--subject` version shows one subject's RDMs, MDS and model fits.
 
@@ -145,12 +150,14 @@ Top-level sections (defaults live in `utils/rsa_common.py::default_config`):
 | `pattern_estimation` | `method` (`glm` or `volume_average`), `unit` (`condition_per_run` or `trial`), `mask_pattern` (a glob; multiple matches are intersected), `model_unlabeled_events`. `confounds`: `source` (`fmriprep` or `file`) plus `load_confounds` kwargs, or `file_pattern` / `columns` / `regex`. `censoring`: `drop_initial_volumes`, `mode` (`censor` or `regress`). `glm`: `output_type` (`t`, `z` or `beta`), `trial_model` (`lss` or `lsa`), `lss_other` (`condition` or `single`), and any `FirstLevelModel` kwarg (`noise_model`, `drift_model`, `high_pass`, `signal_scaling`, `smoothing_fwhm`, `hrf_model`, …). `volume_average`: `hemodynamic_lag`, `detrend`, `standardize`, `high_pass`, `low_pass`, `smoothing_fwhm`. |
 | `rois` | `{name: {mask_pattern}}` |
 | `searchlight` | `enabled`, `mask_pattern`, `radius_voxels`, `threshold`, `n_jobs` |
-| `rdm` | `method` (`correlation`, `euclidean`, `mahalanobis`, `crossnobis`, `poisson` or `poisson_cv`), `cv_descriptor`, `noise.method` (`shrinkage_diag`, `shrinkage_eye`, `diag` or `full`), `remove_voxel_mean` |
+| `rdm` | `method` (`correlation`, `euclidean`, `mahalanobis`, `crossnobis`, `poisson` or `poisson_cv`), `cv_descriptor`, `noise.method` (`shrinkage_diag`, `shrinkage_eye`, `diag` or `full`), `remove_voxel_mean`. `pattern_rdm`: `enabled` (default true), `method` (`correlation`, `euclidean` or `mahalanobis`; default: see above). |
 | `model_rdms` | `{name: spec}`, where spec is one of:<br>`{"type": "categorical", "attribute": a}`: 0 if two items share the attribute, else 1<br>`{"type": "feature", "features": {item: vector}, "metric": ...}`<br>`{"type": "file", "path": "n_items x n_items .csv/.tsv/.npy"}` |
 | `weighted_models` | `{name: {"components": [model_rdms names], "fitter": f}}`, where `f` is one of:<br>`optimize_positive` (default; non-negative weights, works with any comparison method)<br>`optimize`<br>`regress_nn` or `regress` (only with `corr`, `cosine`, `corr_cov` or `cosine_cov`) |
 | `comparison` | `method`: any `rsatoolbox.rdm.compare` method (`corr`, `spearman`, `tau-a`, `rho-a`, `cosine`, `corr_cov`, `cosine_cov`, …) |
 | `group` | `test` (`ttest`, `wilcoxon` or `bootstrap`), `alternative`, `noise_ceiling`, `multiple_comparisons` (a statsmodels method or `none`), `n_bootstrap`, `random_state`. `crossval`: `scheme` (`leave_one_subject_out` or `k_fold`), `k`, `include_fixed` (used by `weighted_models`; needs ≥3 subjects). |
-| `pipeline` | `output_dir`, `subjects` |
+| `rois` (atlas form) | `{name: {"atlas_pattern", "labels": [int, ...]}}`, the union of labels from a label image (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid |
+| `template_rsa` | `rois`, `item_column`, `category_column`, `subcategory_column`. `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query), `window`. `feature_weighting`: `levels` (`item`, `category`, `none`), `item_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_item_columns`, `previous_trial_columns`, `previous_trial_matches`, `item_attributes`, and `group` (`group_by`, `comparisons`, `baseline_trs`, `reference`, `window_trs`, `block_trs`, `contrasts`, `mixed_models`, `n_bootstrap`). Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
+| `pipeline` | `output_dir`, `subjects`, `analyses` (`rdm` and/or `template`) |
 
 Queries use the same grammar as mvpa-decoding:
 
@@ -172,8 +179,10 @@ Some method notes:
 <output_dir>/
 ├── master_spreadsheet*.csv
 ├── sub-<s>/patterns/   *_pattern.nii.gz, sub-<s>_patterns.csv
-├── sub-<s>/rsa/        roi-<roi>/sub-<s>_roi-<roi>_rdm.{csv,hdf5,png}, sub-<s>_model-comparison.csv, searchlight/
-└── group/              roi-<roi>/group_roi-<roi>_{mean-rdm.csv,mean-rdm.png,mds.png,models.png,pairwise.csv}
+├── sub-<s>/rsa/        roi-<roi>/sub-<s>_roi-<roi>_rdm.{csv,hdf5,png}, roi-<roi>/sub-<s>_roi-<roi>_pattern-rdm.{csv,png},
+│                       sub-<s>_model-comparison.csv, searchlight/
+└── group/              roi-<roi>/group_roi-<roi>_{mean-rdm.csv,mean-rdm.png,mean-pattern-rdm.csv,mean-pattern-rdm.png,
+                                                   mds.png,models.png,pairwise.csv}
                         roi-<roi>/group_roi-<roi>_{crossval.csv,crossval-folds.csv,crossval-pairwise.csv,
                                                    crossval.png,weights.csv,weights.png}   (weighted_models)
                         group_model-comparison.csv, rsa_report.pdf
@@ -184,6 +193,26 @@ Some method notes:
 ## Validation dataset
 
 See [tutorial/README.md](tutorial/README.md). It uses Haxby et al. (2001): 6 subjects, 8 object categories, 12 runs (OpenNeuro ds000105). The tutorial includes a re-run of the paper's split-half correlation analysis.
+
+## Template RSA (the lab's method)
+
+`pipeline.analyses: ["template"]` runs the Lewis-Peacock / Banich lab's feature-weighted template matching (Kim et al., 2020; Bretton et al., 2024) instead of, or alongside, `"rdm"`. Each step is set in the `template_rsa` config section:
+
+1. Item templates come from a template phase, such as a localizer or a pre-test.
+2. Voxels are restricted to category-selective masks (GLM t-contrast, p < .05, cluster ≥ 10).
+3. Patterns are weighted by item-vs-others (LSA) or category t-maps.
+4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other items' templates.
+5. Group statistics:
+   - baseline- and reference-subtracted timecourses with window-block tests
+   - paired contrasts with subject-bootstrap CIs
+   - trial N+1 analyses
+   - mixed models
+
+[docs/lab_methods.md](docs/lab_methods.md) gives the formal definition. It maps every step of both papers to config keys and code, and lists open questions. Configs:
+
+- [examples/config-kim2020-ncomms.example.json](examples/config-kim2020-ncomms.example.json)
+- [examples/config-bretton2024-jocn.example.json](examples/config-bretton2024-jocn.example.json)
+- [tutorial/config-haxby-template.example.json](tutorial/config-haxby-template.example.json) (Haxby smoke test)
 
 ## Working-memory analyses
 

@@ -1,0 +1,319 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "Bretton, Kim, Banich & Lewis-Peacock (2024) J Cogn Neurosci 36:2117 -- feature-weighted item- and category-level representational fidelity from the pre- to the post-manipulation memory test; method formalized in docs/lab_methods.md (section B). ASSUMED events.tsv schema (rename to match yours): task-prememory / task-study / task-postmemory rows trial_type='stimulus' with stimulus (item id), category (scene/face), item_type ('manipulated' for the 90 scenes that enter the WM task); task-study rows also carry condition (maintain/replace/suppress); task-postmemory rows carry memory ('remembered' = sure-old hit, 'forgotten' = any other response to an old item). TR = 1 s, fMRIPrep MNI152NLin2009cAsym, 5 s hemodynamic lag. ROIs from fMRIPrep aparcaseg (Desikan-Killiany labels; the paper's VVS list uses Harvard-Oxford region names -- confirm the label set with the lab).",
+  "event_extraction": {
+    "bids_root": "/path/to/bids",
+    "derivatives_root": "/path/to/bids/derivatives/fmriprep",
+    "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/func/*_events.tsv",
+    "output_file": "out/bretton2024/master_spreadsheet.csv"
+  },
+  "pattern_estimation": {
+    "confounds": {
+      "source": "fmriprep",
+      "strategy": [
+        "motion",
+        "wm_csf",
+        "high_pass",
+        "non_steady_state"
+      ],
+      "motion": "full",
+      "wm_csf": "basic"
+    },
+    "censoring": {
+      "mode": "censor"
+    },
+    "glm": {
+      "hrf_model": "glover",
+      "drift_model": null,
+      "high_pass": null,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null,
+      "signal_scaling": 0
+    }
+  },
+  "rois": {
+    "vvs": {
+      "atlas_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/anat/sub-{subject}_space-MNI152NLin2009cAsym_desc-aparcaseg_dseg.nii.gz",
+      "labels": [
+        1007,
+        1009,
+        1011,
+        1013,
+        1015,
+        1016,
+        1021,
+        1030,
+        1033,
+        2007,
+        2009,
+        2011,
+        2013,
+        2015,
+        2016,
+        2021,
+        2030,
+        2033
+      ]
+    },
+    "pfc": {
+      "atlas_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/anat/sub-{subject}_space-MNI152NLin2009cAsym_desc-aparcaseg_dseg.nii.gz",
+      "labels": [
+        1003,
+        1012,
+        1014,
+        1027,
+        1028,
+        1032,
+        2003,
+        2012,
+        2014,
+        2027,
+        2028,
+        2032
+      ]
+    },
+    "parietal": {
+      "atlas_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/anat/sub-{subject}_space-MNI152NLin2009cAsym_desc-aparcaseg_dseg.nii.gz",
+      "labels": [
+        1008,
+        1025,
+        1029,
+        2008,
+        2025,
+        2029
+      ]
+    },
+    "hippocampus": {
+      "atlas_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/anat/sub-{subject}_space-MNI152NLin2009cAsym_desc-aparcaseg_dseg.nii.gz",
+      "labels": [
+        17,
+        53
+      ]
+    }
+  },
+  "template_rsa": {
+    "rois": [
+      "vvs",
+      "pfc",
+      "parietal",
+      "hippocampus"
+    ],
+    "item_column": "stimulus",
+    "category_column": "category",
+    "subcategory_column": null,
+    "timeseries": {
+      "detrend": true,
+      "standardize": "zscore_sample",
+      "high_pass": null,
+      "regress_confounds": true
+    },
+    "templates": {
+      "events": {
+        "and": [
+          {
+            "column": "task",
+            "match": "exact",
+            "value": "prememory"
+          },
+          {
+            "column": "category",
+            "match": "exact",
+            "value": "scene"
+          },
+          {
+            "column": "item_type",
+            "match": "exact",
+            "value": "manipulated"
+          }
+        ]
+      },
+      "window": {
+        "start": {
+          "reference": "onset",
+          "offset_seconds": 5.0
+        },
+        "end": {
+          "reference": "offset_end",
+          "offset_seconds": 5.0
+        }
+      }
+    },
+    "feature_weighting": {
+      "levels": [
+        "item",
+        "category"
+      ],
+      "category_mask": {
+        "enabled": true,
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "exact",
+              "value": "prememory"
+            },
+            {
+              "column": "trial_type",
+              "match": "exact",
+              "value": "stimulus"
+            }
+          ]
+        },
+        "p_threshold": 0.05,
+        "cluster_extent": 10,
+        "min_voxels": 10
+      },
+      "item_contrast": "all_others",
+      "weight_target_patterns": true
+    },
+    "validation": {
+      "enabled": false
+    },
+    "targets": {
+      "manipulation_validation": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "exact",
+              "value": "study"
+            },
+            {
+              "column": "category",
+              "match": "exact",
+              "value": "scene"
+            },
+            {
+              "column": "item_type",
+              "match": "exact",
+              "value": "manipulated"
+            }
+          ]
+        },
+        "mode": "window_mean",
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 5.0
+          },
+          "end": {
+            "reference": "offset_end",
+            "offset_seconds": 5.0
+          }
+        },
+        "group": {
+          "group_by": [
+            "condition"
+          ],
+          "comparisons": [
+            "target",
+            "related"
+          ],
+          "contrasts": [
+            {
+              "name": "target_vs_other_items",
+              "type": "comparison",
+              "a": "target",
+              "b": "related"
+            }
+          ],
+          "n_bootstrap": 10000
+        }
+      },
+      "post_fidelity": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "exact",
+              "value": "postmemory"
+            },
+            {
+              "column": "category",
+              "match": "exact",
+              "value": "scene"
+            },
+            {
+              "column": "item_type",
+              "match": "exact",
+              "value": "manipulated"
+            }
+          ]
+        },
+        "mode": "window_mean",
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 5.0
+          },
+          "end": {
+            "reference": "offset_end",
+            "offset_seconds": 5.0
+          }
+        },
+        "item_attributes": {
+          "events": {
+            "and": [
+              {
+                "column": "task",
+                "match": "exact",
+                "value": "study"
+              },
+              {
+                "column": "category",
+                "match": "exact",
+                "value": "scene"
+              },
+              {
+                "column": "item_type",
+                "match": "exact",
+                "value": "manipulated"
+              }
+            ]
+          },
+          "columns": [
+            "condition"
+          ]
+        },
+        "group": {
+          "group_by": [
+            "condition",
+            "memory"
+          ],
+          "comparisons": [
+            "target"
+          ],
+          "contrasts": [
+            {
+              "name": "remembered_vs_forgotten",
+              "column": "memory",
+              "a": "remembered",
+              "b": "forgotten",
+              "split_by": "condition",
+              "comparison": "target"
+            }
+          ],
+          "mixed_models": [
+            {
+              "name": "fidelity_by_memory",
+              "comparison": "target",
+              "formula": "z ~ C(memory, Treatment('remembered'))",
+              "re_formula": "~C(memory, Treatment('remembered'))",
+              "split_by": "condition"
+            }
+          ],
+          "n_bootstrap": 10000
+        }
+      }
+    }
+  },
+  "pipeline": {
+    "output_dir": "out/bretton2024",
+    "subjects": null,
+    "analyses": [
+      "template"
+    ]
+  }
+}

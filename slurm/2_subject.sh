@@ -7,5 +7,11 @@ set -euo pipefail
 cd "$REPO"
 SUBS=($SUBJECTS)
 SUB=${SUBS[$SLURM_ARRAY_TASK_ID]}
-$PYTHON workflows/estimate_patterns.py --config "$CONFIG" --subject "$SUB"
-$PYTHON workflows/rsa_workflow.py --config "$CONFIG" --subject "$SUB"
+ANALYSES=$($PYTHON -c "import json,sys; print(' '.join(json.load(open(sys.argv[1])).get('pipeline',{}).get('analyses',['rdm'])))" "$CONFIG")
+if [[ " $ANALYSES " == *" rdm "* ]]; then
+  $PYTHON workflows/estimate_patterns.py --config "$CONFIG" --subject "$SUB"
+  $PYTHON workflows/rsa_workflow.py --config "$CONFIG" --subject "$SUB"
+fi
+if [[ " $ANALYSES " == *" template "* ]]; then
+  $PYTHON workflows/template_rsa.py --config "$CONFIG" --subject "$SUB"
+fi

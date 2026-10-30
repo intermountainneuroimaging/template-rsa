@@ -24,6 +24,11 @@ BIDS_ENTITY_RE = re.compile(r"(?:^|_)(?P<key>[a-zA-Z]+)-(?P<val>[^_.]+)")
 
 MATCH_TYPES = {"exact", "in", "regex"}
 BOOL_KEYS = {"and", "or", "not"}
+WINDOW_REFERENCES = {"onset", "offset_end"}
+ANALYSES = {"rdm", "template"}
+FEATURE_LEVELS = {"item", "category", "none"}
+ITEM_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
+TARGET_MODES = {"timecourse", "window_mean"}
 
 PATTERN_METHODS = {"glm", "volume_average"}
 PATTERN_UNITS = {"condition_per_run", "trial"}
@@ -32,6 +37,8 @@ GLM_OUTPUT_TYPES = {"t": "stat", "z": "z_score", "beta": "effect_size"}
 RDM_METHODS = {"correlation", "euclidean", "mahalanobis", "crossnobis", "poisson", "poisson_cv"}
 RDM_METHODS_NEEDING_NOISE = {"mahalanobis", "crossnobis"}
 RDM_METHODS_NEEDING_CV = {"crossnobis", "poisson_cv"}
+# pattern-level RDMs compare single patterns, so cross-validated distances don't apply
+PATTERN_RDM_METHODS = {"correlation", "euclidean", "mahalanobis"}
 NOISE_METHODS = {"full", "diag", "shrinkage_eye", "shrinkage_diag"}
 # rsatoolbox.rdm.compare methods (rsatoolbox 0.3.x)
 COMPARISON_METHODS = {"cosine", "spearman", "corr", "tau-a", "rho-a", "corr_cov", "cosine_cov",
@@ -110,6 +117,10 @@ def default_config() -> dict:
             "cv_descriptor": "run",
             "noise": {"method": "shrinkage_diag"},
             "remove_voxel_mean": False,
+            "pattern_rdm": {
+                "enabled": True,
+                "method": None,
+            },
         },
         "model_rdms": {},
         "weighted_models": {},
@@ -130,11 +141,69 @@ def default_config() -> dict:
                 "include_fixed": True,
             },
         },
+        "template_rsa": {
+            "rois": None,
+            "item_column": "stimulus",
+            "category_column": "category",
+            "subcategory_column": None,
+            "timeseries": {
+                "detrend": True,
+                "standardize": "zscore_sample",
+                "high_pass": None,
+                "low_pass": None,
+                "regress_confounds": False,
+            },
+            "templates": {
+                "events": None,
+                "window": {"start": {"reference": "onset", "offset_seconds": 4.0},
+                           "end": {"reference": "offset_end", "offset_seconds": 4.0}},
+            },
+            "feature_weighting": {
+                "levels": ["item"],
+                "category_mask": {
+                    "enabled": True,
+                    "events": None,
+                    "p_threshold": 0.05,
+                    "cluster_extent": 10,
+                    "min_voxels": 10,
+                    "block_merge_gap_seconds": None,
+                },
+                "item_contrast": "all_others",
+                "weight_target_patterns": True,
+            },
+            "validation": {"enabled": True},
+            "targets": {},
+        },
         "pipeline": {
             "output_dir": "out",
             "subjects": None,
+            "analyses": ["rdm"],
         },
     }
+
+
+TEMPLATE_TARGET_DEFAULTS = {
+    "events": None,
+    "mode": "timecourse",
+    "window": None,
+    "related_level": "category",
+    "extra_item_columns": {},
+    "previous_trial_columns": [],
+    "previous_trial_matches": {},
+    "item_attributes": None,
+    "group": {
+        "group_by": [],
+        "comparisons": ["target", "related", "others"],
+        "baseline_trs": None,
+        "reference": None,
+        "window_trs": None,
+        "block_trs": 3,
+        "contrasts": [],
+        "mixed_models": [],
+        "n_bootstrap": 10000,
+        "random_state": 0,
+    },
+}
 
 
 def merge_with_defaults(user_cfg, base):
@@ -285,6 +354,87 @@ def evaluate_query_node(node, df: pd.DataFrame) -> pd.Series:
         pattern = re.compile(node["value"])
         return series.apply(lambda v: pattern.fullmatch(v) is not None)
     raise ValueError(f"Unknown match type: {match}")
+
+
+# =====================================================
+# Time windows: {"start"/"end": {"reference": "onset"|"offset_end", "offset_seconds"}}
+# (same syntax as mvpa-decoding's timecourse_decoding.window)
+# =====================================================
+
+def validate_window(window, path="window") -> list:
+    if not isinstance(window, dict):
+        return [f"{path}: must be an object with 'start' and 'end'"]
+    errors = []
+    for key in ("start", "end"):
+        bound = window.get(key)
+        if not isinstance(bound, dict):
+            errors.append(f"{path}.{key}: must be an object")
+            continue
+        if bound.get("reference") not in WINDOW_REFERENCES:
+            errors.append(f"{path}.{key}.reference must be one of {sorted(WINDOW_REFERENCES)}")
+        if not isinstance(bound.get("offset_seconds", 0), (int, float)):
+            errors.append(f"{path}.{key}.offset_seconds must be a number")
+    return errors
+
+
+def resolve_window_times(window: dict, onset: float, duration: float):
+    """-> (start_s, end_s) for one event."""
+    def bound(b):
+        base = onset if b["reference"] == "onset" else onset + duration
+        return base + float(b.get("offset_seconds", 0))
+    return bound(window["start"]), bound(window["end"])
+
+
+def window_volumes(window: dict, onset: float, duration: float, tr: float, n_frames: int) -> np.ndarray:
+    """Volume indices an event's window covers (same rounding as compute_volume_range)."""
+    start, end = resolve_window_times(window, onset, duration)
+    lo, hi = compute_volume_range(start, end, tr, n_frames)
+    return np.arange(lo, hi)
+
+
+# =====================================================
+# ROIs: {"mask_pattern"} or {"atlas_pattern", "labels"} (e.g. fMRIPrep aparcaseg / aseg)
+# =====================================================
+
+def validate_roi(roi_cfg: dict, path: str) -> list:
+    if roi_cfg.get("mask_pattern"):
+        return []
+    if roi_cfg.get("atlas_pattern"):
+        labels = roi_cfg.get("labels")
+        if not isinstance(labels, list) or not labels or not all(isinstance(v, int) for v in labels):
+            return [f"{path}: atlas ROIs need a non-empty integer list 'labels'"]
+        return []
+    return [f"{path}: needs 'mask_pattern', or 'atlas_pattern' + 'labels'"]
+
+
+def roi_source_path(roi_cfg: dict, subject: str) -> str:
+    import glob
+    tmpl = roi_cfg.get("mask_pattern") or roi_cfg.get("atlas_pattern")
+    matches = sorted(glob.glob(format_pattern(tmpl, subject=subject)))
+    if len(matches) != 1:
+        raise FileNotFoundError(f"ROI pattern {tmpl!r} matched {len(matches)} files for subject {subject}")
+    return matches[0]
+
+
+def resolve_roi_mask(roi_cfg: dict, subject: str, reference_img=None):
+    """Binary ROI image. Atlas ROIs are the union of the listed integer labels (summed regions,
+    binarized). With reference_img, the mask is resampled (nearest neighbour) onto its grid --
+    e.g. a 1 mm aparcaseg onto the 2.4 mm BOLD grid."""
+    import nibabel as nib
+    from nilearn.image import resample_to_img
+
+    img = nib.load(roi_source_path(roi_cfg, subject))
+    data = np.asarray(img.dataobj)
+    if roi_cfg.get("atlas_pattern"):
+        data = np.isin(np.round(data).astype(int), roi_cfg["labels"])
+    else:
+        data = data > 0
+    mask = nib.Nifti1Image(data.astype(np.uint8), img.affine)
+    if reference_img is not None:
+        ref = nib.load(reference_img) if isinstance(reference_img, str) else reference_img
+        if ref.shape[:3] != mask.shape or not np.allclose(ref.affine, mask.affine):
+            mask = resample_to_img(mask, ref, interpolation="nearest", force_resample=True, copy_header=True)
+    return mask
 
 
 def label_items(df: pd.DataFrame, conditions_cfg: dict) -> pd.DataFrame:
@@ -480,6 +630,59 @@ def clean_measurements(measurements: np.ndarray):
     return measurements[:, varying], varying
 
 
+def sort_pattern_index(index: pd.DataFrame, item_order: list) -> pd.DataFrame:
+    """Patterns ordered by item (config order), then run, then trial -- the row order of
+    pattern-level RDMs, so each item forms one contiguous block."""
+    rank = {item: i for i, item in enumerate(item_order)}
+    trial = index["trial_index"] if "trial_index" in index else pd.Series(np.nan, index=index.index)
+    key = pd.DataFrame({"item": index["item"].map(rank), "run": index["run_id"].astype(str), "trial": trial})
+    return index.loc[key.sort_values(["item", "run", "trial"], kind="stable").index].reset_index(drop=True)
+
+
+def pattern_labels(index: pd.DataFrame) -> list:
+    """'item|run_id' (plus '|t<trial>' for trial-level patterns): row labels of a pattern-level RDM."""
+    labels = []
+    for _, row in index.iterrows():
+        label = f"{row['item']}|{row['run_id']}"
+        if "trial_index" in row and pd.notna(row["trial_index"]):
+            label += f"|t{int(row['trial_index'])}"
+        labels.append(label)
+    return labels
+
+
+def _remove_voxel_mean(dataset, rdm_cfg: dict):
+    import rsatoolbox
+    if not rdm_cfg.get("remove_voxel_mean"):
+        return dataset
+    return rsatoolbox.data.Dataset(
+        dataset.measurements - dataset.measurements.mean(axis=0, keepdims=True),
+        descriptors=dataset.descriptors, obs_descriptors=dataset.obs_descriptors,
+        channel_descriptors=dataset.channel_descriptors)
+
+
+def pattern_rdm_method(rdm_cfg: dict) -> str:
+    """rdm.pattern_rdm.method, else rdm.method when it applies to single patterns, else correlation."""
+    method = (rdm_cfg.get("pattern_rdm") or {}).get("method")
+    if method:
+        return method
+    return rdm_cfg["method"] if rdm_cfg["method"] in PATTERN_RDM_METHODS else "correlation"
+
+
+def compute_pattern_rdm(dataset, rdm_cfg: dict) -> np.ndarray:
+    """Pattern-level RDM: every pattern (each item x run, or each trial) is its own row, in
+    the dataset's row order -- nothing is averaged. A QC / visualization view of the data
+    behind the item RDM: item structure shows as blocks, run or drift effects as stripes."""
+    import rsatoolbox
+
+    dataset = _remove_voxel_mean(dataset, rdm_cfg)
+    method = pattern_rdm_method(rdm_cfg)
+    kwargs = {"method": method}
+    if method in RDM_METHODS_NEEDING_NOISE:
+        noise_method = (rdm_cfg.get("noise") or {}).get("method", "shrinkage_diag")
+        kwargs["noise"] = rsatoolbox.data.noise.prec_from_measurements(dataset, obs_desc="item", method=noise_method)
+    return rsatoolbox.rdm.calc_rdm(dataset, **kwargs).get_matrices()[0]
+
+
 def compute_data_rdm(dataset, rdm_cfg: dict, item_order: list):
     """rdm_cfg -> rsatoolbox calc_rdm. Patterns sharing an item are averaged (or, for
     cross-validated methods, contrasted across `cv_descriptor` folds). Output is
@@ -488,11 +691,7 @@ def compute_data_rdm(dataset, rdm_cfg: dict, item_order: list):
 
     method = rdm_cfg["method"]
     kwargs = {"method": method, "descriptor": "item"}
-    if rdm_cfg.get("remove_voxel_mean"):
-        dataset = rsatoolbox.data.Dataset(
-            dataset.measurements - dataset.measurements.mean(axis=0, keepdims=True),
-            descriptors=dataset.descriptors, obs_descriptors=dataset.obs_descriptors,
-            channel_descriptors=dataset.channel_descriptors)
+    dataset = _remove_voxel_mean(dataset, rdm_cfg)
     if method in RDM_METHODS_NEEDING_NOISE:
         noise_method = (rdm_cfg.get("noise") or {}).get("method", "shrinkage_diag")
         kwargs["noise"] = rsatoolbox.data.noise.prec_from_measurements(

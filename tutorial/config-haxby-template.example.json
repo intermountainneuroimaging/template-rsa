@@ -1,0 +1,163 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "Smoke test of the lab's template-RSA method (docs/lab_methods.md) on Haxby 2001. Haxby has no repeated exemplars, so the 8 categories play the role of items (category_column null: every item is its own category, so there is no 'related' set). Templates: odd runs, 4 s lag; feature weighting: item-vs-others t maps from an LSA GLM on the odd runs, within each item's item-vs-others mask (p<.05, k>=10) inside VT. Targets: even-run blocks (window mean, and a 30 s timecourse from block onset).",
+  "event_extraction": {
+    "bids_root": "data/haxby-bids",
+    "derivatives_root": "data/haxby-bids/derivatives/preproc",
+    "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/func/*_events.tsv",
+    "output_file": "out/haxby-template/master_spreadsheet_haxby.csv"
+  },
+  "pattern_estimation": {
+    "glm": {
+      "noise_model": "ar1",
+      "drift_model": "cosine",
+      "high_pass": 0.008
+    }
+  },
+  "rois": {
+    "vt": {
+      "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/vt_mask.nii.gz"
+    }
+  },
+  "template_rsa": {
+    "item_column": "trial_type",
+    "category_column": null,
+    "timeseries": {
+      "detrend": true,
+      "standardize": "zscore_sample",
+      "high_pass": 0.008
+    },
+    "templates": {
+      "events": {
+        "column": "run",
+        "match": "in",
+        "values": [
+          "1",
+          "3",
+          "5",
+          "7",
+          "9",
+          "11"
+        ]
+      },
+      "window": {
+        "start": {
+          "reference": "onset",
+          "offset_seconds": 4.0
+        },
+        "end": {
+          "reference": "offset_end",
+          "offset_seconds": 4.0
+        }
+      }
+    },
+    "feature_weighting": {
+      "levels": [
+        "item",
+        "none"
+      ],
+      "category_mask": {
+        "enabled": true,
+        "p_threshold": 0.05,
+        "cluster_extent": 10
+      }
+    },
+    "targets": {
+      "even_blocks": {
+        "events": {
+          "column": "run",
+          "match": "in",
+          "values": [
+            "2",
+            "4",
+            "6",
+            "8",
+            "10",
+            "12"
+          ]
+        },
+        "mode": "window_mean",
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 4.0
+          },
+          "end": {
+            "reference": "offset_end",
+            "offset_seconds": 4.0
+          }
+        },
+        "group": {
+          "group_by": [
+            "trial_type"
+          ],
+          "comparisons": [
+            "target",
+            "others"
+          ],
+          "contrasts": [
+            {
+              "name": "target_vs_others",
+              "type": "comparison",
+              "a": "target",
+              "b": "others"
+            }
+          ]
+        }
+      },
+      "even_timecourse": {
+        "events": {
+          "column": "run",
+          "match": "in",
+          "values": [
+            "2",
+            "4",
+            "6",
+            "8",
+            "10",
+            "12"
+          ]
+        },
+        "mode": "timecourse",
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 0
+          },
+          "end": {
+            "reference": "onset",
+            "offset_seconds": 30
+          }
+        },
+        "group": {
+          "group_by": [],
+          "comparisons": [
+            "target",
+            "others"
+          ],
+          "window_trs": [
+            2,
+            11
+          ],
+          "block_trs": 3
+        }
+      }
+    }
+  },
+  "pipeline": {
+    "output_dir": "out/haxby-template",
+    "subjects": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6"
+    ],
+    "analyses": [
+      "template"
+    ]
+  }
+}

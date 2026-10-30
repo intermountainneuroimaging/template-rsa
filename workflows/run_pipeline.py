@@ -8,7 +8,12 @@ run the same stages as separate jobs).
   2  patterns     estimate_patterns.py   (per subject)
   3  rsa          rsa_workflow.py        (per subject)
   4  group        group_rsa.py
+  3t template     template_rsa.py        (per subject; template RSA, Kim et al. 2020 style)
+  4t template_group group_template_rsa.py
   5  report       generate_report.py     (group PDF)
+
+pipeline.analyses picks the analysis families: "rdm" (stages patterns / rsa / group) and/or
+"template" (template / template_group). Stages of an analysis not listed are skipped.
 
 Subjects come from --subject, else pipeline.subjects, else every subject in the
 master spreadsheet.
@@ -31,9 +36,11 @@ from workflows.estimate_patterns import estimate_subject
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
 from workflows.generate_report import generate_report
 from workflows.group_rsa import group_rsa
+from workflows.group_template_rsa import group_template_rsa
 from workflows.rsa_workflow import rsa_subject
+from workflows.template_rsa import template_rsa_subject
 
-STAGES = ("spreadsheet", "validate", "patterns", "rsa", "group", "report")
+STAGES = ("spreadsheet", "validate", "patterns", "rsa", "group", "template", "template_group", "report")
 
 
 def main():
@@ -45,9 +52,12 @@ def main():
 
     cfg = load_config(args.config)
     output_dir = cfg["pipeline"]["output_dir"]
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    stages = [s for s in args.stages if not (s in ("patterns", "rsa", "group") and "rdm" not in analyses)
+              and not (s in ("template", "template_group") and "template" not in analyses)]
     sheet = cfg["event_extraction"]["output_file"]
 
-    if "spreadsheet" in args.stages:
+    if "spreadsheet" in stages:
         print("== Stage 1: master spreadsheet")
         df = build_master_spreadsheet(cfg)
         os.makedirs(os.path.dirname(os.path.abspath(sheet)), exist_ok=True)
@@ -56,7 +66,7 @@ def main():
     subjects = args.subject or cfg["pipeline"].get("subjects") or sorted(df["subject"].unique())
     subjects = [str(s) for s in subjects]
 
-    if "validate" in args.stages:
+    if "validate" in stages:
         print("== Stage 1b: validate config")
         errors, warnings = validate(cfg, df, subjects)
         for w in warnings:
@@ -67,18 +77,25 @@ def main():
             sys.exit(1)
 
     for subject in subjects:
-        if "patterns" in args.stages:
+        if "patterns" in stages:
             print(f"== Stage 2: patterns, sub-{subject}")
             estimate_subject(cfg, df, subject, output_dir)
-        if "rsa" in args.stages:
+        if "rsa" in stages:
             print(f"== Stage 3: RSA, sub-{subject}")
             rsa_subject(cfg, subject, output_dir)
+        if "template" in stages:
+            print(f"== Stage 3t: template RSA, sub-{subject}")
+            template_rsa_subject(cfg, df, subject, output_dir)
 
-    if "group" in args.stages:
+    if "group" in stages:
         print("== Stage 4: group")
         group_rsa(cfg, output_dir, subjects)
 
-    if "report" in args.stages:
+    if "template_group" in stages:
+        print("== Stage 4t: template RSA group")
+        group_template_rsa(cfg, output_dir, subjects)
+
+    if "report" in stages:
         print("== Stage 5: report")
         generate_report(cfg, output_dir, subjects)
 

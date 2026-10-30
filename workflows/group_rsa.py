@@ -15,6 +15,8 @@ Stage 4: group-level RSA for every ROI.
 
 Outputs (under <output_dir>/group/):
   roi-<roi>/group_roi-<roi>_mean-rdm.{csv,png}, _mds.png, _models.png, _pairwise.csv
+  roi-<roi>/group_roi-<roi>_mean-pattern-rdm.{csv,png}  (subjects' pattern-level RDMs averaged,
+                                                         patterns matched by item and position in block)
   group_model-comparison.csv   (one row per ROI x model)
 
 Usage:
@@ -32,7 +34,7 @@ from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import build_model_rdms, build_weighted_models, item_names, load_config
-from utils.rsa_plots import plot_mds, plot_models, plot_rdm, plot_weights
+from utils.rsa_plots import plot_mds, plot_models, plot_pattern_rdm, plot_rdm, plot_weights
 
 
 def load_subject_rdms(output_dir: str, roi: str, items: list, subjects=None):
@@ -53,6 +55,37 @@ def load_subject_rdms(output_dir: str, roi: str, items: list, subjects=None):
         r.reorder([order.index(i) for i in common])
         aligned.append(r)
     return rsatoolbox.rdm.concat(aligned)
+
+
+def mean_pattern_rdm(output_dir: str, roi: str, subjects=None):
+    """Average subjects' pattern-level RDMs. Patterns are matched by item and by position
+    within the item's block (the k-th 'face' pattern in run/trial order), since trial numbers
+    and missing runs differ between subjects; each item keeps as many patterns as the subject
+    with the fewest has. A visualization of the shared block structure, not a test.
+    Returns (frame labelled 'item|k', n_subjects) or (None, 0)."""
+    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", f"roi-{roi}", f"sub-*_roi-{roi}_pattern-rdm.csv")))
+    if subjects:
+        paths = [p for p in paths if os.path.basename(p).split("_")[0][4:] in subjects]
+    frames = [pd.read_csv(p, index_col=0) for p in paths]
+    if not frames:
+        return None, 0
+
+    def positions(frame):
+        items = pd.Series([str(label).split("|")[0] for label in frame.index])
+        return items, items.groupby(items).cumcount()
+
+    item_order = list(dict.fromkeys(positions(frames[0])[0]))
+    counts = {i: min(int((positions(f)[0] == i).sum()) for f in frames) for i in item_order}
+    labels = [f"{i}|{k + 1}" for i in item_order for k in range(counts[i])]
+    if len(labels) < 2:
+        return None, 0
+    stacked = []
+    for f in frames:
+        items, pos = positions(f)
+        row_of = {(i, k): r for r, (i, k) in enumerate(zip(items, pos))}
+        rows = [row_of[(i, k)] for i in item_order for k in range(counts[i])]
+        stacked.append(f.values[np.ix_(rows, rows)])
+    return pd.DataFrame(np.mean(stacked, axis=0), index=labels, columns=labels), len(frames)
 
 
 def noise_ceiling(data_rdms, method: str):
@@ -234,6 +267,11 @@ def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
         plot_rdm(mean_frame, f"{roi}: mean RDM (n={n}, {cfg['rdm']['method']})", prefix + "_mean-rdm.png")
         if len(mean_frame) >= 3:
             plot_mds(mean_frame, f"{roi}: MDS of mean RDM", prefix + "_mds.png")
+        pattern_frame, n_pattern = mean_pattern_rdm(output_dir, roi, subjects)
+        if pattern_frame is not None:
+            pattern_frame.to_csv(prefix + "_mean-pattern-rdm.csv")
+            plot_pattern_rdm(pattern_frame, f"{roi}: mean pattern-level RDM (n={n_pattern}, "
+                             f"{len(pattern_frame)} patterns)", prefix + "_mean-pattern-rdm.png")
 
         nc = noise_ceiling(data_rdms, method) if cfg["group"]["noise_ceiling"] else (np.nan, np.nan)
         if not cfg["model_rdms"] or sims_long.empty:

@@ -22,17 +22,21 @@ import glob
 import os
 import sys
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
     COMPARISON_METHODS, GLM_OUTPUT_TYPES, GROUP_TESTS, LSS_OTHER, NOISE_METHODS, PATTERN_METHODS,
     PATTERN_UNITS, RDM_METHODS, RDM_METHODS_NEEDING_CV, TRIAL_MODELS, format_pattern, item_overlaps,
     label_items, load_config, read_master_spreadsheet, validate_model_rdms, validate_query_node,
-    validate_weighted_models,
+    validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_MODES, evaluate_query_node,
+    roi_source_path, validate_roi, validate_window,
 )
 from utils.preprocessing import check_confound_files, validate_preprocessing
 
 
-def validate(cfg: dict, df, subjects=None):
+def validate_rdm(cfg: dict, df, subjects: list):
+    """Checks for the RDM analysis (pipeline.analyses contains \"rdm\")."""
     errors, warnings = [], []
     columns = set(df.columns)
 
@@ -70,9 +74,6 @@ def validate(cfg: dict, df, subjects=None):
     if not cfg["model_rdms"]:
         warnings.append("model_rdms is empty -- data RDMs will be computed but not compared to any model")
     errors.extend(validate_model_rdms(cfg))
-    pre_errors, pre_warnings = validate_preprocessing(cfg)
-    errors.extend(pre_errors)
-    warnings.extend(pre_warnings)
     errors.extend(validate_weighted_models(cfg))
     if cfg.get("weighted_models") and subjects is not None and len(subjects) < 3:
         warnings.append("weighted_models are evaluated by cross-validation over subjects; "
@@ -85,12 +86,7 @@ def validate(cfg: dict, df, subjects=None):
     for (a, b), n in item_overlaps(labeled, cond).items():
         warnings.append(f"items {a!r} and {b!r} share {n} event(s); they are assigned to {a!r}")
 
-    all_subjects = sorted(labeled["subject"].unique())
-    subjects = subjects or all_subjects
-    missing_subjects = sorted(set(subjects) - set(all_subjects))
-    if missing_subjects:
-        errors.append(f"subject(s) {missing_subjects} not in master spreadsheet")
-
+    missing_subjects = sorted(set(subjects) - set(labeled["subject"]))
     counts = labeled.dropna(subset=["item"]).groupby(["subject", "item"]).agg(
         n_events=("trial_index", "size"), n_runs=("run_id", "nunique"))
     for item in cond["items"]:
@@ -108,22 +104,151 @@ def validate(cfg: dict, df, subjects=None):
             warnings.append(f"item {item!r} has unequal {col} across subjects: "
                             f"{counts.xs(item, level='item')[col].to_dict()}")
 
-    errors.extend(check_confound_files(cfg, labeled, [s for s in subjects if s not in missing_subjects]))
+    return errors, warnings
 
-    templates = {f"rois.{k}.mask_pattern": v.get("mask_pattern") for k, v in cfg["rois"].items()}
-    if cfg["searchlight"]["enabled"]:
-        templates["searchlight.mask_pattern"] = cfg["searchlight"].get("mask_pattern")
-    if cfg["pattern_estimation"].get("mask_pattern"):
-        templates["pattern_estimation.mask_pattern"] = cfg["pattern_estimation"]["mask_pattern"]
-    for label, tmpl in templates.items():
+
+def validate_template(cfg: dict, df, subjects: list):
+    """Checks for template RSA (pipeline.analyses contains "template")."""
+    from workflows.template_rsa import add_previous_trial_columns, target_specs
+
+    errors, warnings = [], []
+    columns = set(df.columns)
+    tr = cfg["template_rsa"]
+    for key in ("item_column", "category_column", "subcategory_column"):
+        if tr.get(key) and tr[key] not in columns:
+            errors.append(f"template_rsa.{key}: column {tr[key]!r} not in master spreadsheet")
+    if not tr["templates"].get("events"):
+        errors.append("template_rsa.templates.events: query selecting the template-phase events is required")
+    else:
+        errors.extend(validate_query_node(tr["templates"]["events"], columns, "template_rsa.templates.events"))
+    errors.extend(validate_window(tr["templates"]["window"], "template_rsa.templates.window"))
+    fw = tr["feature_weighting"]
+    bad = set(fw["levels"]) - FEATURE_LEVELS
+    if bad or not fw["levels"]:
+        errors.append(f"template_rsa.feature_weighting.levels: must be a non-empty subset of {sorted(FEATURE_LEVELS)}")
+    if fw["item_contrast"] not in ITEM_CONTRASTS:
+        errors.append(f"template_rsa.feature_weighting.item_contrast must be one of {sorted(ITEM_CONTRASTS)}")
+    if fw["item_contrast"] == "within_subcategory" and not tr.get("subcategory_column"):
+        errors.append("item_contrast 'within_subcategory' needs template_rsa.subcategory_column")
+    if fw["category_mask"].get("events"):
+        errors.extend(validate_query_node(fw["category_mask"]["events"], columns, "feature_weighting.category_mask.events"))
+    for roi in tr["rois"] or []:
+        if roi not in cfg["rois"]:
+            errors.append(f"template_rsa.rois: {roi!r} is not defined in `rois`")
+    if not tr["targets"]:
+        errors.append("template_rsa.targets: define at least one target set")
+    if errors:
+        return errors, warnings
+
+    tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
+    item_col = tr["item_column"]
+    for name, spec in target_specs(cfg).items():
+        path = f"template_rsa.targets.{name}"
+        if spec["mode"] not in TARGET_MODES:
+            errors.append(f"{path}.mode must be one of {sorted(TARGET_MODES)}")
+        if not spec["events"]:
+            errors.append(f"{path}.events: query is required")
+            continue
+        errors.extend(validate_query_node(spec["events"], columns, f"{path}.events"))
+        errors.extend(validate_window(spec["window"], f"{path}.window"))
+        if spec["related_level"] == "subcategory" and not tr.get("subcategory_column"):
+            errors.append(f"{path}.related_level 'subcategory' needs template_rsa.subcategory_column")
+        for label, col in spec["extra_item_columns"].items():
+            if col not in columns:
+                errors.append(f"{path}.extra_item_columns.{label}: column {col!r} not in master spreadsheet")
+        derived = set(columns)
+        for col in spec["previous_trial_columns"]:
+            if col not in columns:
+                errors.append(f"{path}.previous_trial_columns: column {col!r} not in master spreadsheet")
+            derived |= {f"prev_{col}", f"same_{col}"}
+        for mname, m in (spec.get("previous_trial_matches") or {}).items():
+            for key in ("previous", "current"):
+                if m.get(key) not in columns:
+                    errors.append(f"{path}.previous_trial_matches.{mname}.{key}: column {m.get(key)!r} not in master spreadsheet")
+            derived |= {mname, f"prev_{m.get('previous')}"}
+        attrs = spec.get("item_attributes")
+        if attrs:
+            errors.extend(validate_query_node(attrs.get("events"), columns, f"{path}.item_attributes.events"))
+            for col in attrs.get("columns", []):
+                if col not in columns:
+                    errors.append(f"{path}.item_attributes.columns: {col!r} not in master spreadsheet")
+                derived |= {col, f"item_{col}"}
+        g = spec["group"]
+        group_cols = list(g["group_by"] or [])
+        for c in g.get("contrasts", []):
+            group_cols += [c.get("column")] if c.get("type") != "comparison" else []
+            group_cols += [c.get("split_by")] if isinstance(c.get("split_by"), str) else list(c.get("split_by") or [])
+        for col in [c for c in group_cols if c]:
+            if col not in derived:
+                errors.append(f"{path}.group: column {col!r} is neither in the master spreadsheet nor derived "
+                              "(prev_*/same_* from previous_trial_columns, item_attributes columns)")
+        if g.get("reference") and list(g["group_by"] or []) != [g["reference"].get("column")]:
+            errors.append(f"{path}.group.reference.column must be the single group_by column")
+        if errors:
+            continue
+        targets = df[evaluate_query_node(spec["events"], df)]
+        for sub in subjects:
+            t_items = set(targets.loc[targets["subject"] == sub, item_col].astype(str))
+            k_items = set(tmpl.loc[tmpl["subject"] == sub, item_col].astype(str))
+            if not len(t_items):
+                errors.append(f"{path}: no target events for subject {sub}")
+            elif not k_items:
+                errors.append(f"template_rsa.templates.events: no template events for subject {sub}")
+            elif t_items - k_items:
+                warnings.append(f"{path}: sub-{sub} has {len(t_items - k_items)} target item(s) without a template "
+                                f"(skipped), e.g. {sorted(t_items - k_items)[:3]}")
+    n_per_item = tmpl.groupby(["subject", item_col]).size()
+    if tr["validation"]["enabled"] and len(n_per_item) and n_per_item.max() < 2:
+        warnings.append("template_rsa.validation: every item has one template event, so leave-one-out "
+                        "validation will be skipped (validate with a target set instead)")
+    return errors, warnings
+
+
+def validate(cfg: dict, df, subjects=None):
+    errors, warnings = [], []
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    if set(analyses) - ANALYSES:
+        errors.append(f"pipeline.analyses: unknown {sorted(set(analyses) - ANALYSES)}; use {sorted(ANALYSES)}")
+    pre_errors, pre_warnings = validate_preprocessing(cfg)
+    errors.extend(pre_errors)
+    warnings.extend(pre_warnings)
+    for name, roi_cfg in cfg["rois"].items():
+        errors.extend(validate_roi(roi_cfg, f"rois.{name}"))
+
+    all_subjects = sorted(df["subject"].unique())
+    subjects = list(subjects or all_subjects)
+    missing_subjects = sorted(set(subjects) - set(all_subjects))
+    if missing_subjects:
+        errors.append(f"subject(s) {missing_subjects} not in master spreadsheet")
+    present = [s for s in subjects if s not in missing_subjects]
+
+    for analysis, check in (("rdm", validate_rdm), ("template", validate_template)):
+        if analysis in analyses:
+            e, w = check(cfg, df, present)
+            errors.extend(e)
+            warnings.extend(w)
+    if errors:
+        return errors, warnings
+
+    errors.extend(check_confound_files(cfg, df, present))
+    for name, roi_cfg in cfg["rois"].items():
+        for sub in present:
+            try:
+                roi_source_path(roi_cfg, sub)
+            except FileNotFoundError as err:
+                errors.append(f"rois.{name}: {err}")
+    other = {}
+    if cfg["searchlight"]["enabled"] and "rdm" in analyses:
+        other["searchlight.mask_pattern"] = cfg["searchlight"].get("mask_pattern")
+    if cfg["pattern_estimation"].get("mask_pattern") and "rdm" in analyses:
+        other["pattern_estimation.mask_pattern"] = cfg["pattern_estimation"]["mask_pattern"]
+    for label, tmpl in other.items():
         if not tmpl:
             errors.append(f"{label}: missing")
             continue
-        for sub in subjects:
-            path = format_pattern(tmpl, subject=sub)
-            if not glob.glob(path):
-                errors.append(f"{label}: {path} not found for subject {sub}")
-
+        for sub in present:
+            if not glob.glob(format_pattern(tmpl, subject=sub)):
+                errors.append(f"{label}: {format_pattern(tmpl, subject=sub)} not found for subject {sub}")
     return errors, warnings
 
 
@@ -146,10 +271,21 @@ def main():
     if errors:
         print(f"\n{len(errors)} error(s); fix the config before running the pipeline.")
         sys.exit(1)
-    labeled = label_items(df, cfg["conditions"])
-    summary = labeled.dropna(subset=["item"]).groupby("item").agg(
-        subjects=("subject", "nunique"), runs=("run_id", "nunique"), events=("trial_index", "size"))
-    print(summary.reindex(list(cfg["conditions"]["items"])).to_string())
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    if "rdm" in analyses:
+        labeled = label_items(df, cfg["conditions"])
+        summary = labeled.dropna(subset=["item"]).groupby("item").agg(
+            subjects=("subject", "nunique"), runs=("run_id", "nunique"), events=("trial_index", "size"))
+        print("RDM items:\n" + summary.reindex(list(cfg["conditions"]["items"])).to_string())
+    if "template" in analyses:
+        from workflows.template_rsa import target_specs
+        tr = cfg["template_rsa"]
+        tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
+        rows = {"template events": tmpl.groupby("subject").size(),
+                "template items": tmpl.groupby("subject")[tr["item_column"]].nunique()}
+        for name, spec in target_specs(cfg).items():
+            rows[f"{name} events"] = df[evaluate_query_node(spec["events"], df)].groupby("subject").size()
+        print("Template RSA (per subject):\n" + pd.DataFrame(rows).fillna(0).astype(int).to_string())
     print(f"\nConfig OK ({len(warnings)} warning(s)).")
 
 

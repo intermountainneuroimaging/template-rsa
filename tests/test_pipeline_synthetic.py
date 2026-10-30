@@ -95,10 +95,17 @@ def test_pipeline_recovers_geometry(tmp_path, method, rdm_method, unit, trial_mo
         if unit == "trial":
             assert index["trial_index"].notna().all()
         res = rsa_subject(cfg, sub, out).set_index("model")["similarity"]
+        pattern = pd.read_csv(f"{out}/sub-{sub}/rsa/roi-all/sub-{sub}_roi-all_pattern-rdm.csv", index_col=0)
+        assert len(pattern) == len(index)  # one row per pattern, nothing averaged
+        assert [label.split("|")[0] for label in pattern.index] == sorted(index["item"])  # grouped by item
+        same = np.equal.outer(*[np.array([label.split("|")[0] for label in pattern.index])] * 2)
+        off = ~np.eye(len(pattern), dtype=bool)
+        assert pattern.values[same & off].mean() < pattern.values[~same].mean()
         assert res["ab_vs_c"] > 0.8
         assert res["ab_vs_c"] > res["wrong"]
 
     summary = group_rsa(cfg, out).set_index("model")
+    assert os.path.exists(f"{out}/group/roi-all/group_roi-all_mean-pattern-rdm.csv")
     assert summary.loc["ab_vs_c", "p"] < 0.05
     assert summary.loc["ab_vs_c", "noise_ceiling_upper"] >= summary.loc["ab_vs_c", "noise_ceiling_lower"]
 
