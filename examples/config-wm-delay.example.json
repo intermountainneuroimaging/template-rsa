@@ -1,0 +1,294 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "SKELETON for a delayed-recall working-memory task (see docs/working_memory_rsa.md): events.tsv has one row per trial phase (trial_type = encoding | delay | probe) and a 'stimulus' column (here 4 orientations). Items are phase x stimulus, so one crossnobis RDM contains the within-encoding, within-delay and encoding-vs-delay blocks. Probe events are modeled as nuisance regressors (model_unlabeled_events). Paths and stimulus values are placeholders.",
+  "event_extraction": {
+    "bids_root": "/path/to/bids",
+    "derivatives_root": "/path/to/bids/derivatives/fmriprep",
+    "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_space-T1w_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/func/*_task-wm_*_events.tsv",
+    "output_file": "out/wm/master_spreadsheet.csv"
+  },
+  "conditions": {
+    "include": {
+      "column": "correct",
+      "match": "exact",
+      "value": "1"
+    },
+    "items": {
+      "enc_0": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "encoding"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "0"
+          }
+        ]
+      },
+      "enc_45": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "encoding"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "45"
+          }
+        ]
+      },
+      "enc_90": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "encoding"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "90"
+          }
+        ]
+      },
+      "enc_135": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "encoding"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "135"
+          }
+        ]
+      },
+      "delay_0": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "delay"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "0"
+          }
+        ]
+      },
+      "delay_45": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "delay"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "45"
+          }
+        ]
+      },
+      "delay_90": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "delay"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "90"
+          }
+        ]
+      },
+      "delay_135": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "exact",
+            "value": "delay"
+          },
+          {
+            "column": "stimulus",
+            "match": "exact",
+            "value": "135"
+          }
+        ]
+      }
+    },
+    "attributes": {
+      "enc_0": {
+        "stimulus": "0",
+        "phase": "enc"
+      },
+      "enc_45": {
+        "stimulus": "45",
+        "phase": "enc"
+      },
+      "enc_90": {
+        "stimulus": "90",
+        "phase": "enc"
+      },
+      "enc_135": {
+        "stimulus": "135",
+        "phase": "enc"
+      },
+      "delay_0": {
+        "stimulus": "0",
+        "phase": "delay"
+      },
+      "delay_45": {
+        "stimulus": "45",
+        "phase": "delay"
+      },
+      "delay_90": {
+        "stimulus": "90",
+        "phase": "delay"
+      },
+      "delay_135": {
+        "stimulus": "135",
+        "phase": "delay"
+      }
+    }
+  },
+  "pattern_estimation": {
+    "method": "glm",
+    "unit": "condition_per_run",
+    "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-wm_*_space-T1w_desc-brain_mask.nii.gz",
+    "model_unlabeled_events": true,
+    "confounds": {
+      "source": "fmriprep",
+      "strategy": [
+        "motion",
+        "high_pass",
+        "wm_csf",
+        "scrub",
+        "non_steady_state"
+      ],
+      "motion": "full",
+      "scrub": 0,
+      "fd_threshold": 0.5,
+      "std_dvars_threshold": 1.5
+    },
+    "censoring": {
+      "mode": "censor"
+    },
+    "glm": {
+      "output_type": "beta",
+      "hrf_model": "glover",
+      "drift_model": null,
+      "high_pass": null,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null
+    }
+  },
+  "rois": {
+    "V1": {
+      "mask_pattern": "/path/to/rois/sub-{subject}_space-T1w_label-V1_mask.nii.gz"
+    },
+    "IPS": {
+      "mask_pattern": "/path/to/rois/sub-{subject}_space-T1w_label-IPS_mask.nii.gz"
+    },
+    "dlPFC": {
+      "mask_pattern": "/path/to/rois/sub-{subject}_space-T1w_label-dlPFC_mask.nii.gz"
+    }
+  },
+  "rdm": {
+    "method": "crossnobis",
+    "cv_descriptor": "run",
+    "noise": {
+      "method": "shrinkage_diag"
+    }
+  },
+  "model_rdms": {
+    "orientation": {
+      "type": "feature",
+      "metric": "euclidean",
+      "features": {
+        "enc_0": [
+          1.0,
+          0.0
+        ],
+        "enc_45": [
+          0.0,
+          1.0
+        ],
+        "enc_90": [
+          -1.0,
+          0.0
+        ],
+        "enc_135": [
+          -0.0,
+          -1.0
+        ],
+        "delay_0": [
+          1.0,
+          0.0
+        ],
+        "delay_45": [
+          0.0,
+          1.0
+        ],
+        "delay_90": [
+          -1.0,
+          0.0
+        ],
+        "delay_135": [
+          -0.0,
+          -1.0
+        ]
+      }
+    },
+    "stimulus_identity": {
+      "type": "categorical",
+      "attribute": "stimulus"
+    },
+    "phase": {
+      "type": "categorical",
+      "attribute": "phase"
+    }
+  },
+  "weighted_models": {
+    "orientation+phase": {
+      "components": [
+        "orientation",
+        "phase"
+      ],
+      "fitter": "optimize_positive"
+    }
+  },
+  "comparison": {
+    "method": "cosine"
+  },
+  "group": {
+    "test": "ttest",
+    "alternative": "greater",
+    "noise_ceiling": true,
+    "multiple_comparisons": "fdr_bh",
+    "crossval": {
+      "scheme": "leave_one_subject_out",
+      "include_fixed": true
+    }
+  },
+  "pipeline": {
+    "output_dir": "out/wm",
+    "subjects": [
+      "01",
+      "02",
+      "03"
+    ]
+  }
+}

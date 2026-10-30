@@ -1,0 +1,175 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "Template for an fMRIPrep-preprocessed BIDS study. Replace paths, items, attributes and models. Nuisance model: fMRIPrep's 24 motion parameters + WM/CSF means + fMRIPrep cosine high-pass regressors (so glm.drift_model is null, to avoid a second drift set), high-motion volumes (FD > 0.5 mm or std DVARS > 1.5) and non-steady-state volumes censored, AR(1) prewhitening. The brain mask is the intersection of fMRIPrep's per-run masks. Also shows: include filter, trial-level LSS GLM, crossnobis RDMs, categorical / feature / file model RDMs, a cross-validated weighted model, bootstrap group inference.",
+  "event_extraction": {
+    "bids_root": "/path/to/bids",
+    "derivatives_root": "/path/to/bids/derivatives/fmriprep",
+    "bold_glob": "sub-{subject}/**/func/sub-{subject}*_task-{task}_run-{run}_space-T1w_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/**/func/*_events.tsv",
+    "output_file": "out/mystudy/master_spreadsheet.csv"
+  },
+  "conditions": {
+    "include": {
+      "not": {
+        "column": "response",
+        "match": "exact",
+        "value": "miss"
+      }
+    },
+    "items": {
+      "itemA": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "A"
+      },
+      "itemB": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "B"
+      },
+      "itemC": {
+        "and": [
+          {
+            "column": "trial_type",
+            "match": "regex",
+            "value": "C_.*"
+          },
+          {
+            "column": "task",
+            "match": "exact",
+            "value": "main"
+          }
+        ]
+      }
+    },
+    "attributes": {
+      "itemA": {
+        "category": "x"
+      },
+      "itemB": {
+        "category": "x"
+      },
+      "itemC": {
+        "category": "y"
+      }
+    }
+  },
+  "pattern_estimation": {
+    "method": "glm",
+    "unit": "trial",
+    "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-*_space-T1w_desc-brain_mask.nii.gz",
+    "model_unlabeled_events": true,
+    "confounds": {
+      "source": "fmriprep",
+      "strategy": [
+        "motion",
+        "high_pass",
+        "wm_csf",
+        "scrub",
+        "non_steady_state"
+      ],
+      "motion": "full",
+      "wm_csf": "basic",
+      "scrub": 0,
+      "fd_threshold": 0.5,
+      "std_dvars_threshold": 1.5
+    },
+    "censoring": {
+      "drop_initial_volumes": 0,
+      "mode": "censor"
+    },
+    "glm": {
+      "output_type": "beta",
+      "trial_model": "lss",
+      "lss_other": "condition",
+      "hrf_model": "glover",
+      "drift_model": null,
+      "high_pass": null,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null
+    }
+  },
+  "rois": {
+    "roi1": {
+      "mask_pattern": "/path/to/rois/sub-{subject}_space-T1w_label-roi1_mask.nii.gz"
+    }
+  },
+  "searchlight": {
+    "enabled": false,
+    "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-main_run-1_space-T1w_desc-brain_mask.nii.gz",
+    "radius_voxels": 3,
+    "threshold": 0.7,
+    "n_jobs": 4
+  },
+  "rdm": {
+    "method": "crossnobis",
+    "cv_descriptor": "run",
+    "noise": {
+      "method": "shrinkage_diag"
+    }
+  },
+  "model_rdms": {
+    "category": {
+      "type": "categorical",
+      "attribute": "category"
+    },
+    "semantic": {
+      "type": "feature",
+      "metric": "correlation",
+      "features": {
+        "itemA": [
+          0.1,
+          0.9,
+          0.3
+        ],
+        "itemB": [
+          0.2,
+          0.8,
+          0.1
+        ],
+        "itemC": [
+          0.9,
+          0.1,
+          0.7
+        ]
+      }
+    },
+    "behavior": {
+      "type": "file",
+      "path": "/path/to/behavioral_rdm.csv"
+    }
+  },
+  "weighted_models": {
+    "category+semantic": {
+      "components": [
+        "category",
+        "semantic"
+      ],
+      "fitter": "optimize_positive"
+    }
+  },
+  "comparison": {
+    "method": "cosine"
+  },
+  "group": {
+    "test": "bootstrap",
+    "noise_ceiling": true,
+    "multiple_comparisons": "fdr_bh",
+    "n_bootstrap": 1000,
+    "random_state": 0,
+    "crossval": {
+      "scheme": "leave_one_subject_out",
+      "k": 3,
+      "include_fixed": true
+    }
+  },
+  "pipeline": {
+    "output_dir": "out/mystudy",
+    "subjects": [
+      "01",
+      "02",
+      "03"
+    ]
+  }
+}

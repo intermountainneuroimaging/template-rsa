@@ -1,0 +1,206 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "Validation config: Haxby et al. 2001 (Science 293:2425; OpenNeuro ds000105, nilearn/PyMVPA motion-corrected release, re-laid out by tutorial/fetch_haxby.py). 8 object categories x 12 runs, 24 s blocks. One GLM t-map per category per run (nilearn FirstLevelModel), correlation-distance RDMs in the VT / face / house masks shipped with the data, Kendall tau-a against categorical model RDMs, subject-level random-effects t-tests across 6 subjects. See tutorial/README.md for the published results this is checked against.",
+  "event_extraction": {
+    "bids_root": "data/haxby-bids",
+    "derivatives_root": "data/haxby-bids/derivatives/preproc",
+    "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/func/*_events.tsv",
+    "output_file": "out/haxby/master_spreadsheet_haxby.csv"
+  },
+  "conditions": {
+    "items": {
+      "face": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "face"
+      },
+      "cat": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "cat"
+      },
+      "house": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "house"
+      },
+      "chair": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "chair"
+      },
+      "shoe": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "shoe"
+      },
+      "bottle": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "bottle"
+      },
+      "scissors": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "scissors"
+      },
+      "scrambledpix": {
+        "column": "trial_type",
+        "match": "exact",
+        "value": "scrambledpix"
+      }
+    },
+    "attributes": {
+      "face": {
+        "animacy": "animate",
+        "superordinate": "animate",
+        "face_vs_other": "face",
+        "intact": "intact"
+      },
+      "cat": {
+        "animacy": "animate",
+        "superordinate": "animate",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "house": {
+        "animacy": "inanimate",
+        "superordinate": "place",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "chair": {
+        "animacy": "inanimate",
+        "superordinate": "object",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "shoe": {
+        "animacy": "inanimate",
+        "superordinate": "object",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "bottle": {
+        "animacy": "inanimate",
+        "superordinate": "object",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "scissors": {
+        "animacy": "inanimate",
+        "superordinate": "object",
+        "face_vs_other": "other",
+        "intact": "intact"
+      },
+      "scrambledpix": {
+        "animacy": "none",
+        "superordinate": "scrambled",
+        "face_vs_other": "other",
+        "intact": "scrambled"
+      }
+    }
+  },
+  "pattern_estimation": {
+    "method": "glm",
+    "unit": "condition_per_run",
+    "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/brain_mask.nii.gz",
+    "glm": {
+      "output_type": "t",
+      "hrf_model": "glover",
+      "drift_model": "cosine",
+      "high_pass": 0.008,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null
+    }
+  },
+  "rois": {
+    "vt": {
+      "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/vt_mask.nii.gz"
+    },
+    "face": {
+      "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/face_mask.nii.gz"
+    },
+    "house": {
+      "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/house_mask.nii.gz"
+    }
+  },
+  "searchlight": {
+    "enabled": false,
+    "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/brain_mask.nii.gz",
+    "radius_voxels": 3,
+    "threshold": 0.7,
+    "n_jobs": 4
+  },
+  "rdm": {
+    "method": "correlation",
+    "cv_descriptor": "run",
+    "noise": {
+      "method": "shrinkage_diag"
+    },
+    "remove_voxel_mean": false
+  },
+  "model_rdms": {
+    "animacy": {
+      "type": "categorical",
+      "attribute": "animacy"
+    },
+    "superordinate": {
+      "type": "categorical",
+      "attribute": "superordinate"
+    },
+    "face_vs_other": {
+      "type": "categorical",
+      "attribute": "face_vs_other"
+    },
+    "intact_vs_scrambled": {
+      "type": "categorical",
+      "attribute": "intact"
+    }
+  },
+  "weighted_models": {
+    "animacy+intact": {
+      "components": [
+        "animacy",
+        "intact_vs_scrambled"
+      ],
+      "fitter": "optimize_positive"
+    },
+    "all_categorical": {
+      "components": [
+        "animacy",
+        "superordinate",
+        "face_vs_other",
+        "intact_vs_scrambled"
+      ],
+      "fitter": "optimize_positive"
+    }
+  },
+  "comparison": {
+    "method": "tau-a"
+  },
+  "group": {
+    "test": "ttest",
+    "alternative": "greater",
+    "noise_ceiling": true,
+    "multiple_comparisons": "fdr_bh",
+    "alpha": 0.05,
+    "crossval": {
+      "scheme": "leave_one_subject_out",
+      "include_fixed": true
+    }
+  },
+  "pipeline": {
+    "output_dir": "out/haxby",
+    "subjects": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+# Runtime dependencies (floors = versions this was verified with on 2026-10-29).
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+nibabel>=5.2
+nilearn>=0.11
+matplotlib>=3.9
+statsmodels>=0.14
+rsatoolbox>=0.3.2
