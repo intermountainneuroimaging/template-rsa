@@ -32,15 +32,18 @@ Per ROI in template_rsa.rois:
        target   the event's own item (item_column)
        related  the other items of its category (or subcategory: related_level)
        others   the items of the other categories
-       <name>   the item named in another column (extra_item_columns), e.g. the
-                replacement item on replace trials
-     previous_trial_columns / previous_trial_matches add trial N-1 columns (prev_*, same_*) and
-     item_attributes copies columns from another phase by item.
+       <name>   extra_sets: the templates whose item / category / subcategory is named in
+                another events column, e.g. every template of the replacement category on
+                replace trials
      mode "timecourse": one score per volume from the window start (unshifted), e.g. 30 TRs
      from trial onset; mode "window_mean": volumes in the window averaged first, one score
      per event (e.g. encoding fidelity, or post-test fidelity).
   6. Validation (templates with >=2 events per item): leave-one-event-out template matching
      within the template phase (target / related / others).
+
+Every events.tsv column is carried into the score tables, so study-specific analyses (memory
+outcomes, trial N+1 effects, condition contrasts, mixed models) run on them afterwards, in the
+post-hoc notebooks (_interactive_notebooks/).
 
 Outputs (under <output_dir>/sub-<subject>/template_rsa/):
   sub-<s>_roi-<roi>_target-<set>_scores.csv     one row per event x [volume] x level x comparison
@@ -58,15 +61,12 @@ import os
 import sys
 from dataclasses import dataclass
 
-import nibabel as nib
 import numpy as np
 import pandas as pd
-from nilearn import signal
-from nilearn.glm.contrasts import compute_contrast
-from nilearn.glm.first_level import make_first_level_design_matrix, run_glm
-from nilearn.glm.first_level.first_level import mean_scaling
+from betaestimation.glm import contrast, fit_concatenated, merge_blocks
+from betaestimation.masks import cluster_filter
+from betaestimation.timeseries import clean_run, glm_ready
 from nilearn.maskers import NiftiMasker
-from scipy import ndimage
 from scipy.stats import norm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -76,7 +76,6 @@ from utils.rsa_common import (
     read_master_spreadsheet, resolve_roi_mask, safe_name, subject_dir, window_volumes,
 )
 
-DESIGN_KEYS = ("hrf_model", "drift_model", "high_pass", "drift_order", "fir_delays", "min_onset")
 EVENT_META_COLUMNS = ("boldfile", "eventfile", "n_frames")
 
 
@@ -108,56 +107,24 @@ def load_run(cfg: dict, run_df: pd.DataFrame, masker: NiftiMasker) -> RunData:
     first = run_df.iloc[0]
     tr, n_frames = float(first["tr"]), int(first["n_frames"])
     nuisance = run_nuisance(cfg["pattern_estimation"], run_df)
-    keep = nuisance.kept(n_frames)
     raw = masker.transform(first["boldfile"])
-
     ts = cfg["template_rsa"]["timeseries"]
-    conf = nuisance.confounds if ts["regress_confounds"] and nuisance.confounds is not None else None
-    cleaned = signal.clean(raw, detrend=ts["detrend"], standardize=ts["standardize"], high_pass=ts["high_pass"],
-                           low_pass=ts["low_pass"], t_r=tr, confounds=None if conf is None else conf.values,
-                           sample_mask=None if len(keep) == n_frames else keep)
-    clean = np.full(raw.shape, np.nan)
-    clean[keep] = cleaned
-    glm_data = raw[keep]
-    if cfg["pattern_estimation"]["glm"].get("signal_scaling", 0) is not False:
-        glm_data, _ = mean_scaling(glm_data, axis=cfg["pattern_estimation"]["glm"].get("signal_scaling", 0))
-    return RunData(first["boldfile"], tr, n_frames, keep, clean, glm_data, nuisance.confounds)
+    clean = clean_run(raw, tr, nuisance, detrend=ts["detrend"], standardize=ts["standardize"],
+                      high_pass=ts["high_pass"], low_pass=ts["low_pass"], regress_confounds=ts["regress_confounds"])
+    glm_data = glm_ready(raw, nuisance, cfg["pattern_estimation"]["glm"].get("signal_scaling", 0))
+    return RunData(first["boldfile"], tr, n_frames, nuisance.kept(n_frames), clean, glm_data, nuisance.confounds)
 
 
 # =====================================================
 # 2-3. feature-selection GLMs
 # =====================================================
 
-def merge_blocks(events: pd.DataFrame, gap: float) -> pd.DataFrame:
-    """Merge consecutive same-regressor events separated by <= gap seconds into one boxcar
-    (Kim et al. modeled localizer mini-blocks of 3 same-subcategory trials as one boxcar)."""
-    events = events.sort_values("onset").reset_index(drop=True)
-    rows = []
-    for _, ev in events.iterrows():
-        if rows and rows[-1]["trial_type"] == ev["trial_type"] and \
-                ev["onset"] - (rows[-1]["onset"] + rows[-1]["duration"]) <= gap:
-            rows[-1]["duration"] = ev["onset"] + ev["duration"] - rows[-1]["onset"]
-        else:
-            rows.append({"onset": ev["onset"], "duration": ev["duration"], "trial_type": ev["trial_type"]})
-    return pd.DataFrame(rows)
-
-
 def concat_glm(cfg: dict, runs: dict, events_by_run: dict, prefix: str):
-    """One GLM over several runs: shared regressors named '<prefix>*', everything else
-    (nuisance events, drift, intercept, confounds) made run-specific. -> (labels, results, columns)."""
-    glm_cfg = cfg["pattern_estimation"]["glm"]
-    kwargs = {k: glm_cfg[k] for k in DESIGN_KEYS if k in glm_cfg}
-    designs, data = [], []
-    for k, (bold, events) in enumerate(events_by_run.items()):
-        rd = runs[bold]
-        frame_times = (np.arange(rd.n_frames) + glm_cfg.get("slice_time_ref", 0.0)) * rd.tr
-        design = make_first_level_design_matrix(frame_times, events, add_regs=rd.confounds, **kwargs)
-        design = design.rename(columns={c: f"run{k}_{c}" for c in design.columns if not str(c).startswith(prefix)})
-        designs.append(design.iloc[rd.keep].reset_index(drop=True))
-        data.append(rd.glm)
-    design = pd.concat(designs, ignore_index=True).fillna(0.0)
-    labels, results = run_glm(np.vstack(data), design.values, noise_model=glm_cfg.get("noise_model", "ar1"))
-    return labels, results, list(design.columns)
+    """betaestimation.glm.fit_concatenated over the given runs: shared '<prefix>*' regressors,
+    run-specific nuisance events / drift / intercept / confounds. -> (labels, results, columns)."""
+    run_specs = [{"data": runs[b].glm, "keep": runs[b].keep, "n_frames": runs[b].n_frames, "tr": runs[b].tr,
+                  "events": events, "confounds": runs[b].confounds} for b, events in events_by_run.items()]
+    return fit_concatenated(run_specs, prefix, cfg["pattern_estimation"]["glm"])
 
 
 def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merge_gap=None) -> pd.DataFrame:
@@ -170,21 +137,7 @@ def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merg
 
 
 def contrast_stat(labels, results, columns, weights: dict, stat="t"):
-    vec = np.zeros(len(columns))
-    for col, w in weights.items():
-        vec[columns.index(col)] = w
-    con = compute_contrast(labels, results, vec, stat_type="t")
-    return np.ravel(con.stat() if stat == "t" else con.z_score())
-
-
-def cluster_filter(sig: np.ndarray, masker: NiftiMasker, min_size: int) -> np.ndarray:
-    if min_size <= 1 or not sig.any():
-        return sig
-    vol = np.asarray(masker.inverse_transform(sig.astype(np.float32)).dataobj) > 0
-    lab, n = ndimage.label(vol, structure=np.ones((3, 3, 3)))
-    sizes = ndimage.sum(vol, lab, index=np.arange(1, n + 1))
-    keep = np.isin(lab, np.flatnonzero(sizes >= min_size) + 1)
-    return masker.transform(nib.Nifti1Image(keep.astype(np.float32), masker.mask_img_.affine)).ravel() > 0.5
+    return contrast(labels, results, columns, weights, stat)
 
 
 def feature_selection(cfg, sub_df, runs, masker, items: pd.DataFrame):
@@ -357,36 +310,21 @@ def build_template_sets(cfg, tmpl_events, runs, items, category_masks, category_
     return sets, occurrences
 
 
-def add_previous_trial_columns(events: pd.DataFrame, columns: list, matches: dict = None) -> pd.DataFrame:
-    """prev_<col> = <col> of the preceding target event in the same run; same_<col> is "same" /
-    "different" (empty for a run's first event) -- e.g. Kim et al.'s trial N+1 analysis.
-    matches {name: {"previous": a, "current": b}} adds <name> = "same" when trial N's <a>
-    equals trial N+1's <b> (e.g. trial N's replacement category vs trial N+1's category)."""
-    events = events.sort_values(["boldfile", "onset"]).copy()
-    pairs = {f"same_{c}": (c, c) for c in columns}
-    pairs.update({name: (m["previous"], m["current"]) for name, m in (matches or {}).items()})
-    for prev_col in dict.fromkeys(a for a, _ in pairs.values()):
-        events[f"prev_{prev_col}"] = events.groupby("boldfile")[prev_col].shift(1)
-    for name, (a, b) in pairs.items():
-        prev = events[f"prev_{a}"]
-        match = events[b].astype(str) == prev.astype(str)
-        events[name] = np.where(prev.isna(), None, np.where(match, "same", "different"))
-    return events
-
-
-def add_item_attributes(events: pd.DataFrame, sub_df: pd.DataFrame, spec: dict, item_col: str) -> pd.DataFrame:
-    """Fill columns from another phase by item, e.g. each post-test item's operation from the
-    manipulation phase (Bretton et al.). Values the target events already have are kept; an
-    item seen several times in the source phase takes its first occurrence."""
-    if not spec:
-        return events
-    source = select(sub_df, spec["events"]).sort_values(["run_id", "onset"])
-    source = source.assign(**{item_col: source[item_col].astype(str)}).drop_duplicates(item_col).set_index(item_col)
-    events = events.copy()
-    for col in spec["columns"]:
-        joined = events[item_col].map(source[col])
-        events[col] = events[col].where(events[col].notna(), joined) if col in events else joined
-    return events
+def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
+    """extra_sets {name: {"column", "level"}}: the templates whose item / category / subcategory equals
+    this event's value in `column` -- e.g. on replace trials, every template of the replacement
+    category ({"column": "replace_category", "level": "category"}). Events with no value (or no
+    matching template) get no score for that set."""
+    sets = {}
+    for name, xs in spec.items():
+        value = ev.get(xs["column"])
+        if value is None or pd.isna(value):
+            continue
+        level = xs.get("level", "item")
+        members = ts.items[ts.items[level].astype(str) == str(value)]["item"].tolist()
+        if members:
+            sets[name] = members
+    return sets
 
 
 def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
@@ -394,8 +332,6 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
     item_col = tr_cfg["item_column"]
     events = select(sub_df, spec["events"]).copy()
     events[item_col] = events[item_col].astype(str)
-    events = add_item_attributes(events, sub_df, spec["item_attributes"], item_col)
-    events = add_previous_trial_columns(events, spec["previous_trial_columns"], spec["previous_trial_matches"])
     meta_cols = [c for c in events.columns if c not in EVENT_META_COLUMNS]
 
     rows, skipped = [], 0
@@ -412,10 +348,7 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
                     skipped += 1
                     continue
                 sets = comparison_sets(ts, item, spec["related_level"])
-                for label, column in spec["extra_item_columns"].items():
-                    extra = str(ev.get(column))
-                    if extra in known:
-                        sets[label] = [extra]
+                sets.update(extra_sets(ts, ev, spec["extra_sets"]))
                 meta = {c: ev[c] for c in meta_cols}
                 if spec["mode"] == "timecourse":
                     vols = window_volumes(spec["window"], float(ev["onset"]), float(ev["duration"]),

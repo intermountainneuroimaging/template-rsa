@@ -30,7 +30,7 @@ from utils.rsa_common import (
     PATTERN_UNITS, RDM_METHODS, RDM_METHODS_NEEDING_CV, TRIAL_MODELS, format_pattern, item_overlaps,
     label_items, load_config, read_master_spreadsheet, validate_model_rdms, validate_query_node,
     validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_MODES, evaluate_query_node,
-    roi_source_path, validate_roi, validate_window,
+    roi_source_path, validate_roi, validate_window, EXTRA_SET_LEVELS, POSTHOC_GROUP_KEYS, POSTHOC_TARGET_KEYS,
 )
 from utils.preprocessing import check_confound_files, validate_preprocessing
 
@@ -109,7 +109,7 @@ def validate_rdm(cfg: dict, df, subjects: list):
 
 def validate_template(cfg: dict, df, subjects: list):
     """Checks for template RSA (pipeline.analyses contains "template")."""
-    from workflows.template_rsa import add_previous_trial_columns, target_specs
+    from workflows.template_rsa import target_specs
 
     errors, warnings = [], []
     columns = set(df.columns)
@@ -153,37 +153,26 @@ def validate_template(cfg: dict, df, subjects: list):
         errors.extend(validate_window(spec["window"], f"{path}.window"))
         if spec["related_level"] == "subcategory" and not tr.get("subcategory_column"):
             errors.append(f"{path}.related_level 'subcategory' needs template_rsa.subcategory_column")
-        for label, col in spec["extra_item_columns"].items():
+        raw_spec = tr["targets"][name]
+        moved = sorted(set(raw_spec) & POSTHOC_TARGET_KEYS) + \
+            sorted(f"group.{k}" for k in set(raw_spec.get("group") or {}) & POSTHOC_GROUP_KEYS)
+        if moved:
+            errors.append(f"{path}: {moved} are study-specific post-hoc settings and are no longer part of the "
+                          "core config -- do them in a post-hoc notebook (_interactive_notebooks/; see "
+                          "docs/lab_methods.md). extra_item_columns is now extra_sets {name: {column, level: item}}")
+        for xname, xs in spec["extra_sets"].items():
+            if not isinstance(xs, dict) or xs.get("column") not in columns:
+                errors.append(f"{path}.extra_sets.{xname}.column: {xs.get('column') if isinstance(xs, dict) else xs!r} "
+                              "not in master spreadsheet")
+            elif xs.get("level", "item") not in EXTRA_SET_LEVELS:
+                errors.append(f"{path}.extra_sets.{xname}.level must be one of {sorted(EXTRA_SET_LEVELS)}")
+            elif xs.get("level") == "subcategory" and not tr.get("subcategory_column"):
+                errors.append(f"{path}.extra_sets.{xname}: level 'subcategory' needs template_rsa.subcategory_column")
+            if xname in ("target", "related", "others"):
+                errors.append(f"{path}.extra_sets.{xname}: name clashes with a built-in comparison set")
+        for col in spec["group"]["group_by"] or []:
             if col not in columns:
-                errors.append(f"{path}.extra_item_columns.{label}: column {col!r} not in master spreadsheet")
-        derived = set(columns)
-        for col in spec["previous_trial_columns"]:
-            if col not in columns:
-                errors.append(f"{path}.previous_trial_columns: column {col!r} not in master spreadsheet")
-            derived |= {f"prev_{col}", f"same_{col}"}
-        for mname, m in (spec.get("previous_trial_matches") or {}).items():
-            for key in ("previous", "current"):
-                if m.get(key) not in columns:
-                    errors.append(f"{path}.previous_trial_matches.{mname}.{key}: column {m.get(key)!r} not in master spreadsheet")
-            derived |= {mname, f"prev_{m.get('previous')}"}
-        attrs = spec.get("item_attributes")
-        if attrs:
-            errors.extend(validate_query_node(attrs.get("events"), columns, f"{path}.item_attributes.events"))
-            for col in attrs.get("columns", []):
-                if col not in columns:
-                    errors.append(f"{path}.item_attributes.columns: {col!r} not in master spreadsheet")
-                derived |= {col, f"item_{col}"}
-        g = spec["group"]
-        group_cols = list(g["group_by"] or [])
-        for c in g.get("contrasts", []):
-            group_cols += [c.get("column")] if c.get("type") != "comparison" else []
-            group_cols += [c.get("split_by")] if isinstance(c.get("split_by"), str) else list(c.get("split_by") or [])
-        for col in [c for c in group_cols if c]:
-            if col not in derived:
-                errors.append(f"{path}.group: column {col!r} is neither in the master spreadsheet nor derived "
-                              "(prev_*/same_* from previous_trial_columns, item_attributes columns)")
-        if g.get("reference") and list(g["group_by"] or []) != [g["reference"].get("column")]:
-            errors.append(f"{path}.group.reference.column must be the single group_by column")
+                errors.append(f"{path}.group.group_by: column {col!r} not in master spreadsheet")
         if errors:
             continue
         targets = df[evaluate_query_node(spec["events"], df)]

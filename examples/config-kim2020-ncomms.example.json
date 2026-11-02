@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun 11:6239 -- item-level RSA ('weighted RSA') of WM removal operations; method formalized in docs/lab_methods.md (section K). ASSUMED events.tsv schema (rename to match yours): task-localizer rows trial_type='stimulus' with stimulus (54 item ids), category (face/fruit/scene), subcategory (9); task-study rows trial_type='stimulus' at trial onset with the same item columns plus condition (maintain/replace_category/replace_subcategory/suppress/clear) and replace_category (category of the replacement on replace trials, else n/a). fMRIPrep space-T1w inputs; the published analysis used FSL preprocessing in native space (see lab_methods.md for differences). Excludes replace_subcategory trials, as in the paper.",
+  "notes": "Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun 11:6239 -- CORE settings of the item-level ('weighted') RSA; the study-specific statistics (baseline / minus-maintain timecourses, 3-TR window tests, removal onsets, replacement-category tracking, encoding fidelity and the trial N+1 analysis) are in _interactive_notebooks/kim2020_removal_operations.ipynb. Method: docs/lab_methods.md (section K). ASSUMED events.tsv schema (rename to match yours): task-localizer rows trial_type='stimulus' with stimulus (54 item ids), category (face/fruit/scene), subcategory (9); task-study rows trial_type='stimulus' at trial onset with the same item columns plus condition (maintain/replace_category/replace_subcategory/suppress/clear) and replace_category (category switched to on replace trials, empty otherwise). fMRIPrep space-T1w inputs.",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",
@@ -108,13 +108,6 @@
               "column": "trial_type",
               "match": "exact",
               "value": "stimulus"
-            },
-            {
-              "not": {
-                "column": "condition",
-                "match": "exact",
-                "value": "replace_subcategory"
-              }
             }
           ]
         },
@@ -130,6 +123,12 @@
           }
         },
         "related_level": "category",
+        "extra_sets": {
+          "replacement": {
+            "column": "replace_category",
+            "level": "category"
+          }
+        },
         "group": {
           "group_by": [
             "condition"
@@ -137,21 +136,9 @@
           "comparisons": [
             "target",
             "related",
-            "others"
-          ],
-          "baseline_trs": [
-            0,
-            6
-          ],
-          "reference": {
-            "column": "condition",
-            "value": "maintain"
-          },
-          "window_trs": [
-            6,
-            20
-          ],
-          "block_trs": 3
+            "others",
+            "replacement"
+          ]
         }
       },
       "encoding_fidelity": {
@@ -166,13 +153,6 @@
               "column": "trial_type",
               "match": "exact",
               "value": "stimulus"
-            },
-            {
-              "not": {
-                "column": "condition",
-                "match": "exact",
-                "value": "replace_subcategory"
-              }
             }
           ]
         },
@@ -187,65 +167,16 @@
             "offset_seconds": 4.6
           }
         },
-        "previous_trial_columns": [
-          "category",
-          "condition"
-        ],
-        "previous_trial_matches": {
-          "same_replacement": {
-            "previous": "replace_category",
-            "current": "category"
-          }
-        },
+        "related_level": "category",
         "group": {
           "group_by": [
-            "prev_condition"
+            "condition"
           ],
           "comparisons": [
             "target",
             "related",
             "others"
-          ],
-          "contrasts": [
-            {
-              "name": "target_vs_related",
-              "type": "comparison",
-              "a": "target",
-              "b": "related"
-            },
-            {
-              "name": "target_vs_others",
-              "type": "comparison",
-              "a": "target",
-              "b": "others"
-            },
-            {
-              "name": "same_minus_different_category",
-              "column": "same_category",
-              "a": "same",
-              "b": "different",
-              "split_by": "prev_condition",
-              "comparison": "target",
-              "anova": true,
-              "filter": {
-                "not": {
-                  "and": [
-                    {
-                      "column": "prev_condition",
-                      "match": "exact",
-                      "value": "replace_category"
-                    },
-                    {
-                      "column": "same_replacement",
-                      "match": "exact",
-                      "value": "same"
-                    }
-                  ]
-                }
-              }
-            }
-          ],
-          "n_bootstrap": 1000
+          ]
         }
       }
     }

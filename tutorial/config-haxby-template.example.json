@@ -96,14 +96,6 @@
           "comparisons": [
             "target",
             "others"
-          ],
-          "contrasts": [
-            {
-              "name": "target_vs_others",
-              "type": "comparison",
-              "a": "target",
-              "b": "others"
-            }
           ]
         }
       },
@@ -136,12 +128,7 @@
           "comparisons": [
             "target",
             "others"
-          ],
-          "window_trs": [
-            2,
-            11
-          ],
-          "block_trs": 3
+          ]
         }
       }
     }

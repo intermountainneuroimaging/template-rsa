@@ -159,17 +159,13 @@ def plot_weights(weights: pd.DataFrame, title: str, out_path: str):
     _save(fig, out_path)
 
 
-def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, measure: str, title: str, window_trs=None):
-    """Lines = groups (mean +- SEM ribbon) of one comparison set over TR offsets; grey span = test window."""
-    part = summary[(summary["comparison"] == comparison) & (summary["measure"] == measure)]
+def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, title: str):
+    """Lines = groups (mean +- SEM over subjects) of one comparison set over time from the window start."""
+    part = summary[summary["comparison"] == comparison]
     for grp, gpart in part.groupby("group"):
         gpart = gpart.sort_values("time_s")
         ax.plot(gpart["time_s"], gpart["mean"], label=grp, lw=1.5)
         ax.fill_between(gpart["time_s"], gpart["mean"] - gpart["sem"], gpart["mean"] + gpart["sem"], alpha=0.25)
-    if window_trs and len(part):
-        step = part["time_s"].diff().dropna()
-        step = float(step[step > 0].min()) if (step > 0).any() else 1.0
-        ax.axvspan(window_trs[0] * step, window_trs[1] * step, color="0.9", zorder=0)
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xlabel("time from window start (s)", fontsize=8)
     ax.set_ylabel("similarity (Fisher z)", fontsize=8)
@@ -178,15 +174,12 @@ def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, measure
 
 
 def plot_template_timecourse(summary: pd.DataFrame, g: dict, title: str, out_path: str):
-    measures = [m for m in ("raw", "baseline_corrected", "minus_reference") if m in set(summary["measure"])]
-    keys = summary[["level"]].drop_duplicates()["level"].tolist()
+    levels = list(dict.fromkeys(summary["level"]))
     comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
-    fig, axes = plt.subplots(len(keys) * len(measures), len(comps), squeeze=False,
-                             figsize=(3.6 * len(comps), 2.8 * len(keys) * len(measures)))
-    for i, (level, measure) in enumerate([(l, m) for l in keys for m in measures]):
+    fig, axes = plt.subplots(len(levels), len(comps), squeeze=False, figsize=(3.6 * len(comps), 2.8 * len(levels)))
+    for i, level in enumerate(levels):
         for j, comp in enumerate(comps):
-            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, measure,
-                                     f"{level} | {comp} | {measure}", g.get("window_trs"))
+            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}")
     fig.suptitle(title, fontsize=11)
     _save(fig, out_path)
 

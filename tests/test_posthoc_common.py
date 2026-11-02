@@ -1,0 +1,80 @@
+"""Unit tests for the post-hoc notebook helpers (_interactive_notebooks/rsa_posthoc_common.py)."""
+
+import numpy as np
+import pandas as pd
+
+from _interactive_notebooks.rsa_posthoc_common import (
+    add_previous_trial_columns, baseline_correct, bin_means, difference_scores, first_significant_bin,
+    join_item_attributes, make_bins, make_toy_scores, mixed_model, one_sample_by_bin, paired_contrast,
+    subject_means, subtract_reference)
+
+
+def scores_table():
+    """Two runs of one subject, 3 trials each, two comparison rows per trial."""
+    ev = pd.DataFrame({"subject": "1", "run_id": ["r1"] * 3 + ["r2"] * 3, "trial_index": [1, 2, 3, 1, 2, 3],
+                       "onset": [0, 10, 20, 0, 10, 20], "stimulus": list("abcdef"),
+                       "category": ["face", "face", "scene", "scene", "face", "face"],
+                       "condition": ["maintain", "replace", "suppress", "replace", "maintain", "suppress"],
+                       "replace_category": [None, "scene", None, "face", None, None]})
+    return pd.concat([ev.assign(comparison="target", z=0.5), ev.assign(comparison="others", z=0.1)], ignore_index=True)
+
+
+def test_previous_trial_columns_are_within_run_and_merged_onto_every_row():
+    out = add_previous_trial_columns(scores_table(), ["category", "condition"],
+                                     matches={"same_replacement": ("replace_category", "category")})
+    ev = out[out["comparison"] == "target"].set_index(["run_id", "trial_index"])
+    assert pd.isna(ev.loc[("r2", 1), "prev_category"])                 # first trial of a run has no N-1
+    assert ev.loc[("r1", 2), "same_category"] == "same"                # face -> face
+    assert ev.loc[("r1", 3), "same_category"] == "different"
+    assert ev.loc[("r1", 3), "same_replacement"] == "same"             # trial 2 replaced with scene; trial 3 is a scene
+    assert ev.loc[("r2", 2), "same_replacement"] == "same"             # trial 1 replaced with face; trial 2 is a face
+    assert pd.isna(ev.loc[("r2", 3), "same_replacement"])              # trial N had no replacement: not applicable
+    assert len(out) == len(scores_table())
+
+
+def test_join_item_attributes_fills_missing_by_subject_and_item():
+    master = pd.DataFrame({"subject": ["1", "1", "2"], "run_id": ["s1", "s1", "s1"], "onset": [0, 5, 0],
+                           "task": "study", "stimulus": ["a", "b", "a"], "condition": ["suppress", "maintain", "replace"]})
+    post = pd.DataFrame({"subject": ["1", "1", "2", "2"], "stimulus": ["a", "b", "a", "z"], "condition": [None, None, None, "x"]})
+    out = join_item_attributes(post, master, {"column": "task", "match": "exact", "value": "study"}, "stimulus", ["condition"])
+    assert out["condition"].tolist() == ["suppress", "maintain", "replace", "x"]
+
+
+def test_reference_subtraction_and_bins_recover_the_toy_effect():
+    sub = subject_means(make_toy_scores(), ["condition", "tr_offset", "time_s"])
+    removal = subtract_reference(sub, "condition", "maintain", ["tr_offset", "time_s"])
+    assert set(removal["condition"]) == {"suppress"}
+    tests = one_sample_by_bin(bin_means(removal, make_bins(0, 11, 3), ["condition"]), ["condition"])
+    assert tests["bin"].tolist() == ["0-2", "3-5", "6-8", "9-11"]
+    assert tests.iloc[-1]["mean"] < -0.08 and tests.iloc[-1]["p_fdr"] < 0.05
+    assert abs(tests.iloc[0]["mean"]) < 0.05
+    onset = first_significant_bin(tests, ["condition"], direction="below")
+    assert onset["bin_start"].iloc[0] >= 6
+
+
+def test_baseline_correct_zeroes_the_baseline():
+    sub = subject_means(make_toy_scores(), ["condition", "tr_offset", "time_s"])
+    bc = baseline_correct(sub, (0, 3), ["condition"])
+    base = bc[bc["tr_offset"] < 3].groupby(["subject", "condition"])["z"].mean()
+    assert np.allclose(base, 0)
+
+
+def test_paired_contrast_uses_subjects_with_both_levels():
+    rng = np.random.default_rng(0)
+    rows = [{"subject": s, "op": "suppress", "memory": m, "z": (0.5 if m == "remembered" else 0.3) + rng.normal(0, 0.02)}
+            for s in range(8) for m in ("remembered", "forgotten")]
+    rows.append({"subject": 99, "op": "suppress", "memory": "remembered", "z": 5.0})   # only one outcome: excluded
+    res = paired_contrast(pd.DataFrame(rows), "memory", "remembered", "forgotten", by=["op"])
+    assert res["n"].iloc[0] == 8 and 0.15 < res["mean_diff"].iloc[0] < 0.25
+    assert res["boot_ci_low"].iloc[0] > 0 and res["p"].iloc[0] < 0.001
+    diff = difference_scores(pd.DataFrame(rows), "memory", "remembered", "forgotten", by=["op"])
+    assert len(diff) == 8
+
+
+def test_mixed_model_reports_terms_or_failures():
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame([{"subject": s, "memory": m, "z": 0.3 + (0.2 if m == "remembered" else 0) + rng.normal(0, 0.1)}
+                       for s in range(10) for m in rng.choice(["remembered", "forgotten"], 20)])
+    res = mixed_model(df, "z ~ C(memory, Treatment('remembered'))")
+    term = res[res["term"].str.contains("forgotten", na=False)]
+    assert len(term) == 1 and term["beta"].iloc[0] < -0.1

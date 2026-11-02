@@ -1,2 +1,6 @@
 -r requirements.txt
 pytest>=8
+nbformat>=5.9
+nbclient>=0.10
+ipykernel>=6.29
+pypdfium2>=4.30

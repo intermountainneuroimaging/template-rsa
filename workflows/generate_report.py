@@ -363,6 +363,7 @@ def template_summary_lines(cfg) -> list:
 
 
 def template_pages(pdf, cfg, output_dir):
+    """Descriptive template-RSA pages (the post-hoc notebooks hold the study-specific statistics)."""
     from utils.rsa_plots import draw_template_bars, draw_template_timecourse
     from workflows.template_rsa import target_specs
 
@@ -377,25 +378,19 @@ def template_pages(pdf, cfg, output_dir):
             g = spec["group"]
             prefix = os.path.join(gdir, f"roi-{roi}_target-{safe_name(name)}")
             if spec["mode"] == "timecourse":
-                summary = read_csv(prefix + "_timecourse.csv")
+                summary = read_csv(prefix + "_summary.csv")
                 if summary is None:
                     continue
-                measures = [m for m in ("raw", "baseline_corrected", "minus_reference") if m in set(summary["measure"])]
+                levels = list(dict.fromkeys(summary["level"]))
                 comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
-                for level in dict.fromkeys(summary["level"]):
-                    fig, axes = plt.subplots(len(measures), len(comps), figsize=PAGE, squeeze=False)
-                    for i, measure in enumerate(measures):
-                        for j, comp in enumerate(comps):
-                            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, measure,
-                                                     f"{comp} | {measure}", g.get("window_trs"))
-                    fig.suptitle(f"ROI {roi}: {name} -- {level}-weighted templates", fontsize=12, weight="bold")
-                    fig.tight_layout()
-                    pdf.savefig(fig)
-                    plt.close(fig)
-                blocks = read_csv(prefix + "_block-stats.csv")
-                if blocks is not None and len(blocks):
-                    keep = blocks[(blocks["measure"] != "raw") | (blocks["measure"].nunique() == 1)]
-                    tables.append((f"{name}: window-block tests", keep.drop(columns=["roi", "tr_start", "tr_stop"], errors="ignore")))
+                fig, axes = plt.subplots(len(comps), len(levels), figsize=PAGE, squeeze=False)
+                for j, level in enumerate(levels):
+                    for i, comp in enumerate(comps):
+                        draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}")
+                fig.suptitle(f"ROI {roi}: {name} (timecourse)", fontsize=12, weight="bold")
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
             else:
                 subj = read_csv(prefix + "_subject-means.csv", dtype={"subject": str})
                 if subj is None:
@@ -403,19 +398,15 @@ def template_pages(pdf, cfg, output_dir):
                 levels = list(dict.fromkeys(subj["level"]))
                 fig, axes = plt.subplots(len(levels), 1, figsize=PAGE, squeeze=False)
                 for ax, level in zip(axes.flat, levels):
-                    draw_template_bars(ax, subj[subj["level"] == level], [c for c in g["comparisons"] if c in set(subj["comparison"])],
-                                       f"{level}-weighted templates")
+                    draw_template_bars(ax, subj[subj["level"] == level],
+                                       [c for c in g["comparisons"] if c in set(subj["comparison"])], f"{level}-weighted templates")
                 fig.suptitle(f"ROI {roi}: {name}", fontsize=12, weight="bold")
                 fig.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
-                tables.append((f"{name}: comparison sets (paired t)", read_csv(prefix + "_comparison-tests.csv")))
-                tables.append((f"{name}: contrasts", read_csv(prefix + "_contrasts.csv")))
-            mm = read_csv(prefix + "_mixed-models.csv")
-            if mm is not None and len(mm):
-                tables.append((f"{name}: mixed models", mm.drop(columns=["roi", "formula", "re_formula"], errors="ignore")))
+            tables.append((f"{name}: comparison sets (paired t, FDR)", read_csv(prefix + "_comparison-tests.csv")))
         if tables:
-            table_page(pdf, f"ROI {roi}: template RSA statistics", tables)
+            table_page(pdf, f"ROI {roi}: template RSA (descriptive; study statistics live in the post-hoc notebooks)", tables)
 
 
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:

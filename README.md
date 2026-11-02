@@ -7,7 +7,7 @@ It is built on public tools:
 
 | Job | Tool |
 |---|---|
-| First-level GLMs, masking, EPI masks | [nilearn](https://nilearn.github.io) |
+| First-level / LSS / multi-run GLMs, fMRIPrep confounds and censoring, run cleaning, masks | [betaestimation](../betaestimation) (sibling project, shared with mvpa-decoding), built on [nilearn](https://nilearn.github.io) |
 | RDMs (correlation, Euclidean, Mahalanobis, crossnobis, Poisson), RDM comparison, noise precision, searchlight, bootstrap inference | [rsatoolbox](https://rsatoolbox.readthedocs.io) |
 | Group statistics, multiple-comparison correction | scipy, statsmodels |
 
@@ -31,7 +31,8 @@ rsaworkflow/
 │   └── run_pipeline.py                  # all stages locally, from one config
 ├── slurm/                         # same stages as chained SLURM jobs (0_submit_rsa_pipeline.sh)
 ├── tutorial/                      # Haxby 2001 validation dataset: fetch script, configs, results
-├── examples/                      # fMRIPrep study template; working-memory skeleton config
+├── examples/                      # fMRIPrep study template; working-memory skeleton; Kim 2020 / Bretton 2024 core configs
+├── _interactive_notebooks/        # study-specific post-hoc notebooks + their shared helpers (rsa_posthoc_common.py)
 ├── docs/                          # lab_methods.md (Kim 2020 / Bretton 2024, formalized + mapped), working_memory_rsa.md
 └── tests/                         # unit tests + synthetic end-to-end test
 ```
@@ -51,6 +52,8 @@ python3 -m venv ~/.venvs/rsaworkflow
 ```bash
 ~/.venvs/rsaworkflow/bin/python -m pytest
 ```
+
+Run the install from the repository root: `requirements.txt` installs the sibling `../betaestimation` project in editable mode, and that path is read relative to where pip runs. betaestimation holds the GLM, nuisance and pattern-estimation code shared with mvpa-decoding, so it must be checked out next to this repository.
 
 On Apple-silicon Macs, use a native (arm64) Python. An x86_64 conda under Rosetta installs an arm64 rsatoolbox wheel that won't import.
 
@@ -156,7 +159,7 @@ Top-level sections (defaults live in `utils/rsa_common.py::default_config`):
 | `comparison` | `method`: any `rsatoolbox.rdm.compare` method (`corr`, `spearman`, `tau-a`, `rho-a`, `cosine`, `corr_cov`, `cosine_cov`, …) |
 | `group` | `test` (`ttest`, `wilcoxon` or `bootstrap`), `alternative`, `noise_ceiling`, `multiple_comparisons` (a statsmodels method or `none`), `n_bootstrap`, `random_state`. `crossval`: `scheme` (`leave_one_subject_out` or `k_fold`), `k`, `include_fixed` (used by `weighted_models`; needs ≥3 subjects). |
 | `rois` (atlas form) | `{name: {"atlas_pattern", "labels": [int, ...]}}`, the union of labels from a label image (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid |
-| `template_rsa` | `rois`, `item_column`, `category_column`, `subcategory_column`. `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query), `window`. `feature_weighting`: `levels` (`item`, `category`, `none`), `item_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_item_columns`, `previous_trial_columns`, `previous_trial_matches`, `item_attributes`, and `group` (`group_by`, `comparisons`, `baseline_trs`, `reference`, `window_trs`, `block_trs`, `contrasts`, `mixed_models`, `n_bootstrap`). Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
+| `template_rsa` | `rois`, `item_column`, `category_column`, `subcategory_column`. `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query; select a subset of items through the event naming, e.g. a `trial_type` regex `new_.*`), `window`. `feature_weighting`: `levels` (`item`, `category`, `none`), `item_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_sets` (`{name: {"column", "level": item / category / subcategory}}`), and `group` (`group_by`, `comparisons`; descriptive only). Study-specific post-hoc settings, such as contrasts, reference conditions and previous-trial columns, are rejected here with a pointer to the notebooks. Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
 | `pipeline` | `output_dir`, `subjects`, `analyses` (`rdm` and/or `template`) |
 
 Queries use the same grammar as mvpa-decoding:
@@ -201,12 +204,19 @@ See [tutorial/README.md](tutorial/README.md). It uses Haxby et al. (2001): 6 sub
 1. Item templates come from a template phase, such as a localizer or a pre-test.
 2. Voxels are restricted to category-selective masks (GLM t-contrast, p < .05, cluster ≥ 10).
 3. Patterns are weighted by item-vs-others (LSA) or category t-maps.
-4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other items' templates.
-5. Group statistics:
-   - baseline- and reference-subtracted timecourses with window-block tests
-   - paired contrasts with subject-bootstrap CIs
-   - trial N+1 analyses
-   - mixed models
+4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other items' templates. `extra_sets` adds the templates named in any other event column, such as the replacement category on replace trials.
+5. The group stage stacks every subject's scores into one **group raw table** per ROI and target set, at `group/template_rsa/raw/`. It also writes descriptive subject means and summaries, and a check that the target scores above the related and other items.
+
+The core stops there; it is the same for any design. **Study-specific statistics live in notebooks** in [_interactive_notebooks/](_interactive_notebooks/README.md), as in mvpa-decoding. They start from the raw table, which carries every events.tsv column. Examples:
+
+- baseline- and maintain-referenced timecourses with bin tests
+- memory flags derived from responses
+- operations joined across phases
+- trial N+1 analyses
+- paired contrasts with bootstrap CIs
+- mixed models
+
+Notebooks: [kim2020_removal_operations.ipynb](_interactive_notebooks/kim2020_removal_operations.ipynb), [bretton2024_ltm_fidelity.ipynb](_interactive_notebooks/bretton2024_ltm_fidelity.ipynb).
 
 [docs/lab_methods.md](docs/lab_methods.md) gives the formal definition. It maps every step of both papers to config keys and code, and lists open questions. Configs:
 

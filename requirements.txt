@@ -8,3 +8,5 @@ nilearn>=0.11
 matplotlib>=3.9
 statsmodels>=0.14
 rsatoolbox>=0.3.2
+# shared GLM / nuisance / pattern estimation (sibling project; switch to a git URL once it is on GitHub)
+-e ../betaestimation

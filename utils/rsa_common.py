@@ -19,12 +19,17 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from betaestimation.glm import LSS_OTHER, TRIAL_MODELS  # noqa: F401  (shared GLM options)
+from betaestimation.glm import OUTPUT_TYPES as GLM_OUTPUT_TYPES  # noqa: F401
+from betaestimation.masks import roi_mask
+from betaestimation.timeseries import (  # noqa: F401  (re-exported: shared volume / window math)
+    WINDOW_REFERENCES, compute_volume_range, resolve_window_times, validate_window, window_volumes,
+)
 
 BIDS_ENTITY_RE = re.compile(r"(?:^|_)(?P<key>[a-zA-Z]+)-(?P<val>[^_.]+)")
 
 MATCH_TYPES = {"exact", "in", "regex"}
 BOOL_KEYS = {"and", "or", "not"}
-WINDOW_REFERENCES = {"onset", "offset_end"}
 ANALYSES = {"rdm", "template"}
 FEATURE_LEVELS = {"item", "category", "none"}
 ITEM_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
@@ -32,8 +37,6 @@ TARGET_MODES = {"timecourse", "window_mean"}
 
 PATTERN_METHODS = {"glm", "volume_average"}
 PATTERN_UNITS = {"condition_per_run", "trial"}
-# config name -> nilearn FirstLevelModel.compute_contrast output_type
-GLM_OUTPUT_TYPES = {"t": "stat", "z": "z_score", "beta": "effect_size"}
 RDM_METHODS = {"correlation", "euclidean", "mahalanobis", "crossnobis", "poisson", "poisson_cv"}
 RDM_METHODS_NEEDING_NOISE = {"mahalanobis", "crossnobis"}
 RDM_METHODS_NEEDING_CV = {"crossnobis", "poisson_cv"}
@@ -45,8 +48,6 @@ COMPARISON_METHODS = {"cosine", "spearman", "corr", "tau-a", "rho-a", "corr_cov"
                       "neg_riem_dist", "bures", "bures_metric"}
 MODEL_RDM_TYPES = {"categorical", "feature", "file"}
 GROUP_TESTS = {"ttest", "wilcoxon", "bootstrap"}
-TRIAL_MODELS = {"lsa", "lss"}
-LSS_OTHER = {"condition", "single"}
 # weighted_models.<name>.fitter -> rsatoolbox.model.fitter function name
 FITTERS = {"optimize_positive": "fit_optimize_positive", "optimize": "fit_optimize",
            "regress_nn": "fit_regress_nn", "regress": "fit_regress"}
@@ -187,23 +188,18 @@ TEMPLATE_TARGET_DEFAULTS = {
     "mode": "timecourse",
     "window": None,
     "related_level": "category",
-    "extra_item_columns": {},
-    "previous_trial_columns": [],
-    "previous_trial_matches": {},
-    "item_attributes": None,
+    "extra_sets": {},
     "group": {
         "group_by": [],
         "comparisons": ["target", "related", "others"],
-        "baseline_trs": None,
-        "reference": None,
-        "window_trs": None,
-        "block_trs": 3,
-        "contrasts": [],
-        "mixed_models": [],
-        "n_bootstrap": 10000,
-        "random_state": 0,
     },
 }
+EXTRA_SET_LEVELS = {"item", "category", "subcategory"}
+# keys of earlier template_rsa versions whose (study-specific) analyses now live in the post-hoc
+# notebooks (_interactive_notebooks/); the validator points there instead of silently ignoring them
+POSTHOC_TARGET_KEYS = {"previous_trial_columns", "previous_trial_matches", "item_attributes", "extra_item_columns"}
+POSTHOC_GROUP_KEYS = {"baseline_trs", "reference", "window_trs", "block_trs", "contrasts", "mixed_models",
+                      "n_bootstrap", "random_state"}
 
 
 def merge_with_defaults(user_cfg, base):
@@ -361,35 +357,7 @@ def evaluate_query_node(node, df: pd.DataFrame) -> pd.Series:
 # (same syntax as mvpa-decoding's timecourse_decoding.window)
 # =====================================================
 
-def validate_window(window, path="window") -> list:
-    if not isinstance(window, dict):
-        return [f"{path}: must be an object with 'start' and 'end'"]
-    errors = []
-    for key in ("start", "end"):
-        bound = window.get(key)
-        if not isinstance(bound, dict):
-            errors.append(f"{path}.{key}: must be an object")
-            continue
-        if bound.get("reference") not in WINDOW_REFERENCES:
-            errors.append(f"{path}.{key}.reference must be one of {sorted(WINDOW_REFERENCES)}")
-        if not isinstance(bound.get("offset_seconds", 0), (int, float)):
-            errors.append(f"{path}.{key}.offset_seconds must be a number")
-    return errors
 
-
-def resolve_window_times(window: dict, onset: float, duration: float):
-    """-> (start_s, end_s) for one event."""
-    def bound(b):
-        base = onset if b["reference"] == "onset" else onset + duration
-        return base + float(b.get("offset_seconds", 0))
-    return bound(window["start"]), bound(window["end"])
-
-
-def window_volumes(window: dict, onset: float, duration: float, tr: float, n_frames: int) -> np.ndarray:
-    """Volume indices an event's window covers (same rounding as compute_volume_range)."""
-    start, end = resolve_window_times(window, onset, duration)
-    lo, hi = compute_volume_range(start, end, tr, n_frames)
-    return np.arange(lo, hi)
 
 
 # =====================================================
@@ -417,25 +385,10 @@ def roi_source_path(roi_cfg: dict, subject: str) -> str:
 
 
 def resolve_roi_mask(roi_cfg: dict, subject: str, reference_img=None):
-    """Binary ROI image. Atlas ROIs are the union of the listed integer labels (summed regions,
-    binarized). With reference_img, the mask is resampled (nearest neighbour) onto its grid --
-    e.g. a 1 mm aparcaseg onto the 2.4 mm BOLD grid."""
-    import nibabel as nib
-    from nilearn.image import resample_to_img
-
-    img = nib.load(roi_source_path(roi_cfg, subject))
-    data = np.asarray(img.dataobj)
-    if roi_cfg.get("atlas_pattern"):
-        data = np.isin(np.round(data).astype(int), roi_cfg["labels"])
-    else:
-        data = data > 0
-    mask = nib.Nifti1Image(data.astype(np.uint8), img.affine)
-    if reference_img is not None:
-        ref = nib.load(reference_img) if isinstance(reference_img, str) else reference_img
-        if ref.shape[:3] != mask.shape or not np.allclose(ref.affine, mask.affine):
-            mask = resample_to_img(mask, ref, interpolation="nearest", force_resample=True, copy_header=True)
-    return mask
-
+    """Binary ROI image (betaestimation.masks.roi_mask): a mask file, or the union of integer
+    labels of an atlas (summed regions, binarized), resampled onto reference_img's grid."""
+    return roi_mask(roi_source_path(roi_cfg, subject), roi_cfg.get("labels") if roi_cfg.get("atlas_pattern") else None,
+                    reference_img)
 
 def label_items(df: pd.DataFrame, conditions_cfg: dict) -> pd.DataFrame:
     """Add an `item` column naming which RDM item (conditions.items key) each event
@@ -470,15 +423,6 @@ def item_overlaps(df: pd.DataFrame, conditions_cfg: dict) -> dict:
 # =====================================================
 # Volume math (volume_average pattern estimation)
 # =====================================================
-
-def compute_volume_range(start_time: float, stop_time: float, tr: float, n_frames: int):
-    """Return [start_vol, stop_vol) covering start_time for a span of (stop_time - start_time)
-    seconds, clipped to n_frames. Volume count comes from the duration (rounded to whole TRs),
-    with at least one volume kept -- same convention as mvpa-decoding."""
-    start_vol = int(math.floor(start_time / tr))
-    n_volumes = max(1, round((stop_time - start_time) / tr))
-    stop_vol = min(start_vol + n_volumes, n_frames)
-    return start_vol, max(stop_vol, start_vol)
 
 
 # =====================================================
