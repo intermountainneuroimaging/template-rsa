@@ -71,6 +71,8 @@ def default_config() -> dict:
         },
         "conditions": {
             "include": None,
+            "item_column": None,
+            "attribute_columns": [],
             "items": {},
             "attributes": {},
         },
@@ -219,6 +221,9 @@ def load_config(cfg_path: str) -> dict:
         user_cfg = json.load(f)
     cfg = merge_with_defaults(user_cfg, default_config())
     cfg["_config_path"] = os.path.abspath(cfg_path)
+    sheet = cfg["event_extraction"]["output_file"]
+    if cfg["conditions"].get("item_column") and os.path.exists(sheet):
+        expand_conditions(cfg, read_master_spreadsheet(sheet))
     return cfg
 
 
@@ -242,8 +247,15 @@ def pattern_index_path(output_dir: str, subject: str) -> str:
 
 
 def item_names(cfg: dict) -> list:
-    """RDM row/column order == key order of conditions.items in the config."""
-    return list(cfg["conditions"]["items"].keys())
+    """RDM row/column order == key order of conditions.items (written by hand, or generated
+    from conditions.item_column by expand_conditions)."""
+    cond = cfg["conditions"]
+    if not cond["items"] and cond.get("item_column"):
+        problems = cond.get("_expand_errors") or [
+            f"conditions.item_column={cond['item_column']!r}: items are read from the event table "
+            f"({cfg['event_extraction']['output_file']}); build it first (stage 'spreadsheet')"]
+        raise SystemExit("\n".join(problems))
+    return list(cond["items"].keys())
 
 
 def safe_name(name) -> str:
@@ -405,6 +417,67 @@ def label_items(df: pd.DataFrame, conditions_cfg: dict) -> pd.DataFrame:
         hit = evaluate_query_node(query, df) & df["item"].isna()
         df.loc[hit, "item"] = name
     return df
+
+
+MISSING_VALUES = {"", "n/a", "nan", "NaN", "None"}
+
+
+def expand_conditions(cfg: dict, df: pd.DataFrame) -> list:
+    """With conditions.item_column set, every distinct value of that column (among the events
+    kept by conditions.include, across all subjects) becomes an item, and each item's
+    attributes are read from conditions.attribute_columns. Writes conditions.items /
+    .attributes in place and returns a list of problems (also kept in
+    conditions._expand_errors for the validator).
+
+    Item order -- the RDM's row order -- sorts by the attribute columns, then the item, so
+    items of one category sit together. An item whose events disagree on an attribute
+    (e.g. one exemplar listed under two categories) is an error. Hand-written attributes for
+    a generated item are kept and override the columns."""
+    cond = cfg["conditions"]
+    col, attr_cols = cond.get("item_column"), list(cond.get("attribute_columns") or [])
+    if not col:
+        return []
+    if cond.get("items") and not cond.get("_items_generated"):
+        errors = ["conditions: set either item_column (items read from the event table) or items "
+                  "(written by hand), not both"]
+        cond["_expand_errors"] = errors
+        return errors
+    missing = [c for c in [col, *attr_cols] if c not in df.columns]
+    errors = [f"conditions: column {c!r} is not in the event table" for c in missing]
+    if not errors:
+        sub = df[evaluate_query_node(cond["include"], df)] if cond.get("include") else df
+        sub = sub[~sub[col].isna()]
+        sub = sub.assign(**{c: sub[c].astype(str) for c in [col, *attr_cols]})
+        sub = sub[~sub[col].isin(MISSING_VALUES)]
+        if sub.empty:
+            errors.append(f"conditions.item_column={col!r}: no events with a value in that column")
+        attributes = {}
+        for item, grp in sub.groupby(col, sort=False):
+            attributes[item] = {}
+            for a in attr_cols:
+                values = sorted(set(grp[a]) - MISSING_VALUES)
+                if len(values) > 1:
+                    errors.append(f"item {item!r}: its events disagree on {a!r} ({', '.join(values)})")
+                attributes[item][a] = values[0] if values else None
+        order = sorted(attributes, key=lambda i: ([str(attributes[i][a]) for a in attr_cols], i))
+        manual = cond.setdefault("_manual_attributes", copy.deepcopy(cond.get("attributes") or {}))
+        cond["items"] = {i: {"column": col, "match": "exact", "value": i} for i in order}
+        cond["attributes"] = {i: {**attributes[i], **manual.get(i, {})} for i in order}
+        cond["_items_generated"] = True
+    cond["_expand_errors"] = errors
+    if errors:
+        cond["items"] = {}
+    return errors
+
+
+def regressor_name_collisions(items) -> dict:
+    """{safe name: [items]} for items whose names differ only in non-alphanumeric characters
+    (dog_1 vs dog1). Regressors and pattern files are named by safe_name(item), so such items
+    would be fit as one regressor and overwrite each other's files."""
+    groups = {}
+    for item in items:
+        groups.setdefault(safe_name(item), []).append(item)
+    return {k: v for k, v in groups.items() if len(v) > 1}
 
 
 def item_overlaps(df: pd.DataFrame, conditions_cfg: dict) -> dict:

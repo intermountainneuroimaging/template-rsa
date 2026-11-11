@@ -98,3 +98,44 @@ def test_weighted_model_validation():
     cfg["comparison"]["method"] = "tau-a"
     errs = validate_weighted_models(cfg)
     assert any("not in model_rdms" in e for e in errs) and any("only supports" in e for e in errs)
+
+
+def _hierarchy_events():
+    return pd.DataFrame({
+        "trial_type": ["stim"] * 6 + ["probe"],
+        "category":    ["tool", "animal", "animal", "animal", "tool", "animal", None],
+        "subcategory": ["kitchen", "mammal", "bird", "mammal", "kitchen", "bird", None],
+        "exemplar":    ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03", None],
+    })
+
+
+def test_item_column_generates_items_and_attributes():
+    from utils.rsa_common import build_model_rdms, expand_conditions, item_names, label_items
+    cfg = default_config()
+    cfg["conditions"].update(include={"column": "trial_type", "match": "exact", "value": "stim"},
+                             item_column="exemplar", attribute_columns=["category", "subcategory"])
+    cfg["model_rdms"] = {"category": {"type": "categorical", "attribute": "category"}}
+    assert expand_conditions(cfg, _hierarchy_events()) == []
+    # sorted by category, then subcategory, then exemplar; the probe (no exemplar) is not an item
+    assert item_names(cfg) == ["robin03", "dog01", "whisk02"]
+    assert cfg["conditions"]["attributes"]["dog01"] == {"category": "animal", "subcategory": "mammal"}
+    labeled = label_items(_hierarchy_events(), cfg["conditions"])
+    assert labeled["item"].tolist() == ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03"]
+    mat = build_model_rdms(cfg).get_matrices()[0]
+    assert mat[0, 1] == 0 and mat[0, 2] == 1
+
+
+def test_item_column_errors():
+    from utils.rsa_common import expand_conditions, regressor_name_collisions
+    ev = _hierarchy_events()
+    ev.loc[3, "category"] = "tool"  # dog01 listed under two categories
+    cfg = default_config()
+    cfg["conditions"].update(item_column="exemplar", attribute_columns=["category"])
+    errors = expand_conditions(cfg, ev)
+    assert any("dog01" in e and "disagree" in e for e in errors) and cfg["conditions"]["items"] == {}
+
+    cfg = default_config()
+    cfg["conditions"].update(item_column="exemplar", items={"x": {"column": "exemplar", "match": "exact", "value": "x"}})
+    assert "not both" in expand_conditions(cfg, ev)[0]
+
+    assert regressor_name_collisions(["dog_1", "dog1", "cat"]) == {"dog1": ["dog_1", "dog1"]}

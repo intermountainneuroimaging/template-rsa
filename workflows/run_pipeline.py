@@ -30,7 +30,7 @@ import sys
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import load_config, read_master_spreadsheet
+from utils.rsa_common import expand_conditions, load_config, read_master_spreadsheet
 from utils.validate_rsa_config import validate
 from workflows.estimate_patterns import estimate_subject
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
@@ -63,6 +63,7 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(sheet)), exist_ok=True)
         df.to_csv(sheet, index=False)
     df = read_master_spreadsheet(sheet)
+    expand_conditions(cfg, df)  # conditions.item_column: items come from the (re)built table
     subjects = args.subject or cfg["pipeline"].get("subjects") or sorted(df["subject"].unique())
     subjects = [str(s) for s in subjects]
 

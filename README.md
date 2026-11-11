@@ -33,7 +33,9 @@ rsaworkflow/
 ├── tutorial/                      # Haxby 2001 validation dataset: fetch script, configs, results
 ├── examples/                      # fMRIPrep study template; working-memory skeleton; Kim 2020 / Bretton 2024 core configs
 ├── _interactive_notebooks/        # study-specific post-hoc notebooks + their shared helpers (rsa_posthoc_common.py)
-├── docs/                          # lab_methods.md (Kim 2020 / Bretton 2024, formalized + mapped), working_memory_rsa.md
+├── docs/                          # lab_methods.md (Kim 2020 / Bretton 2024, formalized + mapped), code_walkthrough.md
+│                                  # (the methods as annotated code, both projects; rebuild with build_code_walkthrough.py),
+│                                  # working_memory_rsa.md
 └── tests/                         # unit tests + synthetic end-to-end test
 ```
 
@@ -149,7 +151,7 @@ Top-level sections (defaults live in `utils/rsa_common.py::default_config`):
 | Section | Keys |
 |---|---|
 | `event_extraction` | `bids_root`, `derivatives_root`, `bold_glob`, `events_glob`, `output_file` |
-| `conditions` | `items`: `{name: query}`; the RDM row order is the key order. `attributes`: `{name: {attr: value}}`, used by categorical models. `include`: optional query that drops events before anything else. |
+| `conditions` | `items`: `{name: query}`; the RDM row order is the key order. `attributes`: `{name: {attr: value}}`, used by categorical models. Or, instead of `items`: `item_column` (every distinct value of that events.tsv column is an item) with `attribute_columns` (attributes read from other columns). `include`: optional query that drops events before anything else. |
 | `pattern_estimation` | `method` (`glm` or `volume_average`), `unit` (`condition_per_run` or `trial`), `mask_pattern` (a glob; multiple matches are intersected), `model_unlabeled_events`. `confounds`: `source` (`fmriprep` or `file`) plus `load_confounds` kwargs, or `file_pattern` / `columns` / `regex`. `censoring`: `drop_initial_volumes`, `mode` (`censor` or `regress`). `glm`: `output_type` (`t`, `z` or `beta`), `trial_model` (`lss` or `lsa`), `lss_other` (`condition` or `single`), and any `FirstLevelModel` kwarg (`noise_model`, `drift_model`, `high_pass`, `signal_scaling`, `smoothing_fwhm`, `hrf_model`, …). `volume_average`: `hemodynamic_lag`, `detrend`, `standardize`, `high_pass`, `low_pass`, `smoothing_fwhm`. |
 | `rois` | `{name: {mask_pattern}}` |
 | `searchlight` | `enabled`, `mask_pattern`, `radius_voxels`, `threshold`, `n_jobs` |

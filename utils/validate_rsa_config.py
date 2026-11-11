@@ -26,7 +26,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
-    COMPARISON_METHODS, GLM_OUTPUT_TYPES, GROUP_TESTS, LSS_OTHER, NOISE_METHODS, PATTERN_METHODS,
+    COMPARISON_METHODS, GLM_OUTPUT_TYPES, expand_conditions, regressor_name_collisions, GROUP_TESTS, LSS_OTHER, NOISE_METHODS, PATTERN_METHODS,
     PATTERN_UNITS, RDM_METHODS, RDM_METHODS_NEEDING_CV, TRIAL_MODELS, format_pattern, item_overlaps,
     label_items, load_config, read_master_spreadsheet, validate_model_rdms, validate_query_node,
     validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_MODES, evaluate_query_node,
@@ -41,8 +41,15 @@ def validate_rdm(cfg: dict, df, subjects: list):
     columns = set(df.columns)
 
     cond = cfg["conditions"]
+    if cond.get("item_column"):
+        expand_errors = expand_conditions(cfg, df)
+        if expand_errors:
+            return errors + expand_errors, warnings
     if not cond.get("items"):
-        errors.append("conditions.items: must define at least one item")
+        errors.append("conditions: define items, or set item_column to read them from the event table")
+    for safe, names in regressor_name_collisions(cond["items"]).items():
+        errors.append(f"items {', '.join(map(repr, names))} all become regressor / file name {safe!r} "
+                      "(only letters and digits are kept); rename them so they differ in letters or digits")
     for name, query in cond["items"].items():
         errors.extend(validate_query_node(query, columns, f"conditions.items.{name}"))
     if cond.get("include"):
