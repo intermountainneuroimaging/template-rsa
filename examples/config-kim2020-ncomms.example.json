@@ -1,13 +1,20 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun 11:6239 -- CORE settings of the item-level ('weighted') RSA; the study-specific statistics (baseline / minus-maintain timecourses, 3-TR window tests, removal onsets, replacement-category tracking, encoding fidelity and the trial N+1 analysis) are in _interactive_notebooks/kim2020_removal_operations.ipynb. Method: docs/lab_methods.md (section K). ASSUMED events.tsv schema (rename to match yours): task-localizer rows trial_type='stimulus' with stimulus (54 item ids), category (face/fruit/scene), subcategory (9); task-study rows trial_type='stimulus' at trial onset with the same item columns plus condition (maintain/replace_category/replace_subcategory/suppress/clear) and replace_category (category switched to on replace trials, empty otherwise). fMRIPrep space-T1w inputs.",
+  "notes": "Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun 11:6239 -- CORE settings of the exemplar-level ('weighted') RSA (the paper's 'item-level'); the study-specific statistics (baseline / minus-maintain timecourses, 3-TR window tests, removal onsets, replacement-category tracking, encoding fidelity and the trial N+1 analysis) are in _interactive_notebooks/kim2020_removal_operations.ipynb. Method: docs/lab_methods.md (section K). ASSUMED events.tsv schema (rename to match yours): task-localizer rows trial_type='stimulus' with stimulus (54 exemplar ids), category (face/fruit/scene), subcategory (9) -- events.hierarchy category > subcategory > stimulus; task-study rows trial_type='stimulus' at trial onset with the same hierarchy columns plus operation (maintain/replace_category/replace_subcategory/suppress/clear) and replace_category (category switched to on replace trials, empty otherwise). fMRIPrep space-T1w inputs.",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",
     "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_space-T1w_desc-preproc_bold.nii.gz",
     "events_glob": "sub-*/func/*_events.tsv",
     "output_file": "out/kim2020/master_spreadsheet.csv"
+  },
+  "events": {
+    "hierarchy": [
+      "category",
+      "subcategory",
+      "stimulus"
+    ]
   },
   "pattern_estimation": {
     "confounds": {
@@ -17,7 +24,7 @@
         "scrub"
       ],
       "motion": "basic",
-      "scrub": 0,
+      "min_segment_volumes": 0,
       "fd_threshold": 0.9,
       "std_dvars_threshold": 1000
     },
@@ -43,9 +50,8 @@
     "rois": [
       "vvs"
     ],
-    "item_column": "stimulus",
-    "category_column": "category",
-    "subcategory_column": "subcategory",
+    "category_level": "category",
+    "subcategory_level": "subcategory",
     "timeseries": {
       "detrend": true,
       "standardize": "zscore_sample",
@@ -80,7 +86,7 @@
     },
     "feature_weighting": {
       "levels": [
-        "item"
+        "exemplar"
       ],
       "category_mask": {
         "enabled": true,
@@ -89,7 +95,7 @@
         "min_voxels": 10,
         "block_merge_gap_seconds": 5.0
       },
-      "item_contrast": "all_others",
+      "exemplar_contrast": "all_others",
       "weight_target_patterns": true
     },
     "validation": {
@@ -131,7 +137,7 @@
         },
         "group": {
           "group_by": [
-            "condition"
+            "operation"
           ],
           "comparisons": [
             "target",
@@ -170,7 +176,7 @@
         "related_level": "category",
         "group": {
           "group_by": [
-            "condition"
+            "operation"
           ],
           "comparisons": [
             "target",

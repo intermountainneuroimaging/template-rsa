@@ -46,14 +46,14 @@ def test_kim_notebook(core_run, tmp_path, monkeypatch):
     execute("kim2020_removal_operations.ipynb", config_path, tmp_path, monkeypatch)
     assert (tmp_path / "stats_and_figures.pdf").exists() and (tmp_path / "run_settings.json").exists()
     removal = pd.read_csv(tmp_path / "removal_vs_maintain_by_bin.csv")
-    assert set(removal["condition"]) == {"replace_category", "suppress"}
-    # synthetic suppress drops the item after the stimulus: late bins below maintain
-    late = removal[(removal["condition"] == "suppress") & (removal["bin_start"] >= 6)]
+    assert set(removal["operation"]) == {"replace_category", "suppress"}
+    # synthetic suppress drops the exemplar after the stimulus: late bins below maintain
+    late = removal[(removal["operation"] == "suppress") & (removal["bin_start"] >= 6)]
     assert (late["mean"] < 0).all()
     repl = pd.read_csv(tmp_path / "replacement_minus_target.csv")
     assert repl["mean_diff"].iloc[-1] > 0
     pi = pd.read_csv(tmp_path / "proactive_interference.csv")
-    assert {"prev_condition", "mean_diff", "boot_ci_low"} <= set(pi.columns)
+    assert {"prev_operation", "mean_diff", "boot_ci_low"} <= set(pi.columns)
     fid = pd.read_csv(tmp_path / "encoding_fidelity_pairwise.csv")
     assert (fid["mean_diff"] > 0).all()  # target > related > others
 
@@ -65,7 +65,7 @@ def test_bretton_notebook(core_run, tmp_path, monkeypatch):
     check = pd.read_csv(tmp_path / "template_check_manipulation.csv")
     assert (check["mean_diff"] > 0).all()
     memory = pd.read_csv(tmp_path / "fidelity_remembered_vs_forgotten.csv")
-    item = memory[memory["level"] == "item"]
-    assert len(item) and (item["mean_diff"] > 0).mean() >= 2 / 3  # remembered items came back stronger
+    exemplar = memory[memory["level"] == "exemplar"]
+    assert len(exemplar) and (exemplar["mean_diff"] > 0).mean() >= 2 / 3  # remembered exemplars came back stronger
     mixed = pd.read_csv(tmp_path / "fidelity_mixed_models.csv")
     assert len(mixed)

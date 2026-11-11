@@ -29,8 +29,8 @@ def draw_rdm(ax, matrix: pd.DataFrame, title: str, cmap: str = "viridis", colorb
     return im
 
 
-def item_blocks(labels) -> list:
-    """[(item, start, stop)] for consecutive runs of the same item in 'item|run[|trial]' labels."""
+def row_blocks(labels) -> list:
+    """[(row, start, stop)] for consecutive runs of the same RDM row in '<row>|run[|e<event>]' labels."""
     items = [str(label).split("|")[0] for label in labels]
     blocks, start = [], 0
     for i in range(1, len(items) + 1):
@@ -42,21 +42,21 @@ def item_blocks(labels) -> list:
 
 def draw_pattern_rdm(ax, matrix: pd.DataFrame, title: str, cmap: str = "viridis", colorbar: bool = True,
                      labels: bool = True, line_width: float = 0.6):
-    """Pattern-level RDM (rows = single patterns grouped by item): white lines between item
-    blocks, item names centered on each block instead of one tick per pattern. Color limits
+    """Pattern-level RDM (rows = single patterns grouped by RDM row, e.g. exemplar): white lines
+    between blocks, row names centered on each block instead of one tick per pattern. Color limits
     are the 1st-99th percentile of off-diagonal values so the zero diagonal doesn't wash out
     the structure."""
     values = matrix.values
     off = values[~np.eye(len(values), dtype=bool)]
     vmin, vmax = (np.nanpercentile(off, [1, 99]) if off.size else (None, None))
     im = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
-    blocks = item_blocks(matrix.index)
+    blocks = row_blocks(matrix.index)
     for _, _, stop in blocks[:-1]:
         ax.axhline(stop - 0.5, color="white", lw=line_width)
         ax.axvline(stop - 0.5, color="white", lw=line_width)
     if labels:
         centers = [(start + stop - 1) / 2 for _, start, stop in blocks]
-        names = [item for item, _, _ in blocks]
+        names = [row for row, _, _ in blocks]
         ax.set_xticks(centers, names, rotation=90, fontsize=7)
         ax.set_yticks(centers, names, fontsize=7)
         ax.tick_params(length=0)

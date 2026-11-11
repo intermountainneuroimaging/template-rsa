@@ -4,14 +4,16 @@ This is a working draft for planning. It covers which questions RSA can answer a
 
 [examples/config-wm-delay.example.json](../examples/config-wm-delay.example.json) is a skeleton config for the analyses marked **ready**. Its task has 4 orientations, encoding and delay phases, fMRIPrep confounds, crossnobis distances, and V1, IPS and dlPFC ROIs.
 
+Vocabulary: "the remembered item" below is the WM-literature sense (the stimulus held in mind). In the pipeline's terms, each stimulus is an **exemplar** (the finest level of `events.hierarchy`), a single encoding or delay event of it is an **item**, and coarser hierarchy levels (phase, category) are **conditions**. Factors that cross the hierarchy (stimulus identity across phases, cue status) are separate columns, used for filtering or as explicit `groups` models.
+
 ## 1. Questions RSA can answer in WM
 
 | Question | RSA form |
 |---|---|
 | Is the remembered item represented during the delay, and where? | Delay-period item RDM vs. a stimulus model (identity, feature distance, category) |
 | In what format: sensory, categorical or abstract? | Compare competing model RDMs, e.g. a perceptual-similarity RDM from a localizer vs. a category RDM vs. a semantic RDM. Weighted models show their relative contribution. |
-| Is the delay code the same as the encoding (perceptual) code? | Cross-phase RSA: the encoding × delay block of an RDM over phase × item conditions. A transformed code shows as a delay RDM matching the model without matching encoding. |
-| How do attended and unattended items differ (retro-cue / priority)? | Items = stimulus × priority state. Typical findings: the unattended item weakens in the RDM, or appears in a transformed code. |
+| Is the delay code the same as the encoding (perceptual) code? | Cross-phase RSA: the encoding × delay block of an RDM over phase × stimulus exemplars. A transformed code shows as a delay RDM matching the model without matching encoding. |
+| How do attended and unattended items differ (retro-cue / priority)? | Exemplars = stimulus × priority state. Typical findings: the unattended item weakens in the RDM, or appears in a transformed code. |
 | How does representation change over the trial? | Timecourse RSA: RDM per TR after trial onset, with the model fit traced over time. Temporal generalization uses cross-time RDMs. |
 | Does representational strength predict behavior? | Trial-level pattern similarity (item-specific vs. other items) related to accuracy, precision or RT |
 | Does load change the representation? | Load as an attribute; RDMs or model fits within each load level |
@@ -22,8 +24,8 @@ This is a working draft for planning. It covers which questions RSA can answer a
    - Model each phase as its own regressor. Use LSS for trial-wise estimates.
    - Prefer jittered delays and a few catch trials (no delay, or no probe), which make phase estimates separable.
    - Check the correlation between the encoding and delay regressors in the design matrix (to be added to run QC; see §4).
-2. **The probe is confounded with the memory item.** The probe or response often resembles the remembered item, so model the probe phase separately. Here that means probe events are nuisance regressors (`model_unlabeled_events`). Counterbalance probe identity.
-3. **Within-run similarity is inflated by shared noise and temporal proximity.** Compare patterns only across runs. Use cross-validated distances (crossnobis, `cv_descriptor: run`). This needs every item in ≥2 runs (`validate_rsa_config.py` checks this).
+2. **The probe is confounded with the memory item.** The probe or response often resembles the remembered item, so model the probe phase separately. Here that means probe events are nuisance regressors: they are not in `events.item_types`, so they get their own regressor (`model_unlabeled_events`). Counterbalance probe identity.
+3. **Within-run similarity is inflated by shared noise and temporal proximity.** Compare patterns only across runs. Use cross-validated distances (crossnobis, `cv_descriptor: run`). This needs every exemplar in ≥2 runs (`validate_rsa_config.py` checks this).
 4. **Univariate load and difficulty effects.** Overall activation differences such as load or effort inflate pattern distances between conditions.
    - Correlation distance or `rdm.remove_voxel_mean` removes them.
    - Alternatively, include a univariate "activation magnitude" model RDM as a competing model.
@@ -34,27 +36,27 @@ This is a working draft for planning. It covers which questions RSA can answer a
 ## 3. Analysis families and pipeline support
 
 ### A. Delay-period item RDM: ready
-Define items with a phase filter, e.g. `trial_type == "delay"` and `stimulus == X`. Compare the item RDM with:
+Give the delay events the hierarchy `trial_type > phase_stimulus` and set `events.item_types: ["delay"]` (encoding events then become nuisance), or keep both phases as items and look at the delay block (§B). Compare the delay RDM with:
 
 - **Feature models:** orientation as `[cos 2θ, sin 2θ]` features, color angle, etc.
-- **Categorical models:** identity or category.
+- **Categorical models:** a coarser hierarchy level (`level`), or a grouping that crosses it (`groups`, e.g. stimulus identity across phases).
 - **File models:** a perceptual RDM from a localizer or a behavioral confusion RDM.
 
 Use crossnobis on betas, cross-validated over runs.
 
 ### B. Encoding vs. delay (cross-phase): partly ready
-Items = phase × stimulus (as in the skeleton config). One crossnobis RDM then contains three blocks: within-encoding, within-delay, and encoding × delay.
+Exemplars = phase × stimulus: the skeleton config's events carry a `phase_stimulus` column (`encoding_0` … `delay_135`) under `trial_type`, so the hierarchy `trial_type > phase_stimulus` nests. One crossnobis RDM then contains three blocks: within-encoding, within-delay, and encoding × delay.
 
 - **Ready:** model RDMs over the whole 2n × 2n matrix. Examples:
-  - `stimulus_identity`: same stimulus counts as similar regardless of phase.
-  - `phase`: encoding vs. delay.
+  - `stimulus_identity`: same stimulus counts as similar regardless of phase (a `groups` model, since identity crosses the phases).
+  - `phase`: encoding vs. delay (`{"type": "categorical", "level": "trial_type"}`).
   - A weighted model of the two.
 - **New:**
   - *Block-restricted comparison.* Fit a model only within the encoding × delay block, or only within-delay. rsatoolbox requires matching NaN positions, so the plan is a model `mask` option that NaNs the same cells in the data RDM before comparing. This is small and contained.
   - *Cross-phase generalization index.* Same-item minus different-item distance in the cross block, a cheap, interpretable summary, reported per ROI and subject.
 
 ### C. Priority / retro-cue: ready (with suitable events)
-Items = stimulus × status, e.g. `cued_0`, `uncued_0`, …, built from events columns. Models:
+Exemplars = stimulus × status, e.g. `cued_0`, `uncued_0`, …, as an events column under a `status` level. Models:
 
 - the cued item represented
 - the uncued item represented
@@ -72,7 +74,7 @@ This is the RSA analogue of mvpa-decoding's `timecourse_decoding`, with the same
 - **Group:** a t-test at each lag, with cluster-based permutation over time; a plot with phase boundaries marked.
 - **Option:** temporal generalization, a cross-lag RDM (lag i vs. lag j patterns, cross-validated over runs) testing whether the code is stable or dynamic.
 
-This is the biggest addition. It needs a `timepoint` pattern unit, a lag dimension in the RSA and group stages, and a report page.
+This is the biggest addition. It needs a `timepoint` pattern level, a lag dimension in the RSA and group stages, and a report page.
 
 ### E. Trial-level similarity (reinstatement / ERS): new
 This uses LSS trial patterns (ready) but doesn't build an RDM. For each trial, it compares:

@@ -1,13 +1,18 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Smoke test of the lab's template-RSA method (docs/lab_methods.md) on Haxby 2001. Haxby has no repeated exemplars, so the 8 categories play the role of items (category_column null: every item is its own category, so there is no 'related' set). Templates: odd runs, 4 s lag; feature weighting: item-vs-others t maps from an LSA GLM on the odd runs, within each item's item-vs-others mask (p<.05, k>=10) inside VT. Targets: even-run blocks (window mean, and a 30 s timecourse from block onset).",
+  "notes": "Smoke test of the lab's template-RSA method (docs/lab_methods.md) on Haxby 2001. Haxby has no repeated exemplars, so the 8 categories play the role of exemplars (events.hierarchy ['category'], no category_level: every exemplar is its own category, so there is no 'related' set). Templates: odd runs, 4 s lag; feature weighting: exemplar-vs-others t maps from an LSA GLM on the odd runs, within each exemplar's own category mask (p<.05, k>=10) inside VT. Targets: even-run blocks (window mean, and a 30 s timecourse from block onset).",
   "event_extraction": {
     "bids_root": "data/haxby-bids",
     "derivatives_root": "data/haxby-bids/derivatives/preproc",
     "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_desc-preproc_bold.nii.gz",
     "events_glob": "sub-*/func/*_events.tsv",
     "output_file": "out/haxby-template/master_spreadsheet_haxby.csv"
+  },
+  "events": {
+    "hierarchy": [
+      "category"
+    ]
   },
   "pattern_estimation": {
     "glm": {
@@ -22,8 +27,7 @@
     }
   },
   "template_rsa": {
-    "item_column": "trial_type",
-    "category_column": null,
+    "category_level": null,
     "timeseries": {
       "detrend": true,
       "standardize": "zscore_sample",
@@ -55,7 +59,7 @@
     },
     "feature_weighting": {
       "levels": [
-        "item",
+        "exemplar",
         "none"
       ],
       "category_mask": {
@@ -91,7 +95,7 @@
         },
         "group": {
           "group_by": [
-            "trial_type"
+            "category"
           ],
           "comparisons": [
             "target",

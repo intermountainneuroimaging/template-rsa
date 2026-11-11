@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Template for an fMRIPrep-preprocessed BIDS study. Replace paths, items, attributes and models. Nuisance model: fMRIPrep's 24 motion parameters + WM/CSF means + fMRIPrep cosine high-pass regressors (so glm.drift_model is null, to avoid a second drift set), high-motion volumes (FD > 0.5 mm or std DVARS > 1.5) and non-steady-state volumes censored, AR(1) prewhitening. The brain mask is the intersection of fMRIPrep's per-run masks. Also shows: include filter, trial-level LSS GLM, crossnobis RDMs, categorical / feature / file model RDMs, a cross-validated weighted model, bootstrap group inference.",
+  "notes": "Template for an fMRIPrep-preprocessed BIDS study. Replace paths, the hierarchy and models. ASSUMED events.tsv: trial_type stim | rest | other events; columns category > stimulus (the hierarchy) and response. Nuisance model: fMRIPrep's 24 motion parameters + WM/CSF means + fMRIPrep cosine high-pass regressors (so glm.drift_model is null, to avoid a second drift set), high-motion volumes (FD > 0.5 mm or std DVARS > 1.5) and non-steady-state volumes censored, AR(1) prewhitening. The brain mask is the intersection of fMRIPrep's per-run masks. Also shows: item_types / baseline_types / item_filter (missed responses become nuisance), item-level LSS GLM, crossnobis RDMs, categorical / feature / file model RDMs, a cross-validated weighted model, bootstrap group inference.",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",
@@ -9,55 +9,28 @@
     "events_glob": "sub-*/**/func/*_events.tsv",
     "output_file": "out/mystudy/master_spreadsheet.csv"
   },
-  "conditions": {
-    "include": {
+  "events": {
+    "hierarchy": [
+      "category",
+      "stimulus"
+    ],
+    "item_types": [
+      "stim"
+    ],
+    "baseline_types": [
+      "rest"
+    ],
+    "item_filter": {
       "not": {
         "column": "response",
         "match": "exact",
         "value": "miss"
       }
-    },
-    "items": {
-      "itemA": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "A"
-      },
-      "itemB": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "B"
-      },
-      "itemC": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "regex",
-            "value": "C_.*"
-          },
-          {
-            "column": "task",
-            "match": "exact",
-            "value": "main"
-          }
-        ]
-      }
-    },
-    "attributes": {
-      "itemA": {
-        "category": "x"
-      },
-      "itemB": {
-        "category": "x"
-      },
-      "itemC": {
-        "category": "y"
-      }
     }
   },
   "pattern_estimation": {
     "method": "glm",
-    "unit": "trial",
+    "level": "item",
     "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-*_space-T1w_desc-brain_mask.nii.gz",
     "model_unlabeled_events": true,
     "confounds": {
@@ -71,7 +44,7 @@
       ],
       "motion": "full",
       "wm_csf": "basic",
-      "scrub": 0,
+      "min_segment_volumes": 0,
       "fd_threshold": 0.5,
       "std_dvars_threshold": 1.5
     },
@@ -81,8 +54,8 @@
     },
     "glm": {
       "output_type": "beta",
-      "trial_model": "lss",
-      "lss_other": "condition",
+      "item_model": "lss",
+      "lss_other": "by_label",
       "hrf_model": "glover",
       "drift_model": null,
       "high_pass": null,
@@ -112,23 +85,23 @@
   "model_rdms": {
     "category": {
       "type": "categorical",
-      "attribute": "category"
+      "level": "category"
     },
     "semantic": {
       "type": "feature",
       "metric": "correlation",
       "features": {
-        "itemA": [
+        "A": [
           0.1,
           0.9,
           0.3
         ],
-        "itemB": [
+        "B": [
           0.2,
           0.8,
           0.1
         ],
-        "itemC": [
+        "C": [
           0.9,
           0.1,
           0.7

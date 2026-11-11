@@ -51,20 +51,20 @@ def test_category_masks_split_the_roi(run):
 def test_validation_and_post_test_rank_target_related_others(run):
     _, _, _, out = run
     val = group_file(out, "template-validation.csv")
-    v = val[val["level"] == "item"].groupby("comparison")["z"].mean()
+    v = val[val["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert v["target"] > v["related"] > v["others"]
     post = group_file(out, "target-posttest_subject-means.csv")
-    p = post[post["level"] == "item"].groupby("comparison")["z"].mean()
+    p = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert p["target"] > p["related"] > p["others"]
     tests = group_file(out, "target-posttest_comparison-tests.csv")
     assert (tests.loc[tests["contrast"] == "target - others", "t"] > 0).all()
 
 
-def test_raw_table_carries_event_columns_and_skips_items_without_templates(run):
+def test_raw_table_carries_event_columns_and_skips_exemplars_without_templates(run):
     _, _, _, out = run
     raw = raw_file(out, "posttest")
     assert {"response", "confidence", "stimulus", "category", "subject", "level", "comparison", "z"} <= set(raw.columns)
-    assert not raw["stimulus"].str.endswith("9").any()  # new items have no template
+    assert not raw["stimulus"].str.endswith("9").any()  # new exemplars have no template
     assert raw["subject"].nunique() == len(SUBJECTS)
 
 
@@ -72,18 +72,18 @@ def test_replacement_set_only_on_replace_trials_and_tracks_the_new_category(run)
     _, _, _, out = run
     raw = raw_file(out, "studytimecourse")
     repl = raw[raw["comparison"] == "replacement"]
-    assert set(repl["condition"]) == {"replace_category"}
-    late = raw[(raw["level"] == "item") & raw["tr_offset"].between(8, 12)]
-    on_replace = late[late["condition"] == "replace_category"].groupby("comparison")["z"].mean()
+    assert set(repl["operation"]) == {"replace_category"}
+    late = raw[(raw["level"] == "exemplar") & raw["tr_offset"].between(8, 12)]
+    on_replace = late[late["operation"] == "replace_category"].groupby("comparison")["z"].mean()
     assert on_replace["replacement"] > on_replace["target"]
-    target = late[late["comparison"] == "target"].groupby("condition")["z"].mean()
+    target = late[late["comparison"] == "target"].groupby("operation")["z"].mean()
     assert target["maintain"] > target["suppress"]
 
 
-def test_template_items_are_selected_by_the_template_query(tmp_path):
-    """Selecting a subset of items is done in templates.events (e.g. a trial_type regex such as
+def test_template_exemplars_are_selected_by_the_template_query(tmp_path):
+    """Selecting a subset of exemplars is done in templates.events (e.g. a trial_type regex such as
     'new_.*'); unselected template-phase events are modeled as nuisance regressors, get no template,
-    and their items are never scored."""
+    and their exemplars are never scored."""
     make_dataset(tmp_path, ("1",))
     cfg, _ = make_config(tmp_path, templates={
         "events": {"and": [q("task", "localizer"), {"column": "stimulus", "match": "regex", "value": "actor.*|beach.*"}]},
@@ -93,7 +93,7 @@ def test_template_items_are_selected_by_the_template_query(tmp_path):
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
     scores = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/template_rsa/sub-1_roi-vvs_target-post_test_scores.csv")
     assert set(scores["stimulus"].str.rstrip("0123456789")) == {"actor", "beach"}
-    assert scores.groupby(["level", "comparison"])["n_items"].max().loc[("item", "others")] == 3  # 3 beach items only
+    assert scores.groupby(["level", "comparison"])["n_exemplars"].max().loc[("exemplar", "others")] == 3  # 3 beach exemplars only
 
 
 def test_single_event_templates_skip_validation(tmp_path):
@@ -106,7 +106,7 @@ def test_single_event_templates_skip_validation(tmp_path):
     assert errors == [] and any("leave-one-out" in w for w in warnings)
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
     post = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/template_rsa/sub-1_roi-vvs_target-post_test_scores.csv")
-    m = post[post["level"] == "item"].groupby("comparison")["z"].mean()
+    m = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert m["target"] > m["others"]
 
 
@@ -124,3 +124,24 @@ def test_report_includes_template_pages(run):
     _, cfg, _, out = run
     import pypdfium2 as pdfium
     assert len(pdfium.PdfDocument(generate_report(cfg, out))) >= 5
+
+
+def test_renamed_template_keys_are_rejected(run, tmp_path):
+    import json
+    from utils.rsa_common import load_config
+    root, _, _, _ = run
+    _, user = make_config(root)
+    user["template_rsa"]["item_column"] = "stimulus"
+    user["template_rsa"]["feature_weighting"]["levels"] = ["item"]
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(user))
+    with pytest.raises(SystemExit, match="item_column"):
+        load_config(str(path))
+
+
+def test_hierarchy_that_does_not_nest_is_rejected(run):
+    root, cfg, df, _ = run
+    bad = df.copy()
+    bad.loc[bad.index[0], "category"] = "scene" if bad.loc[bad.index[0], "category"] == "face" else "face"
+    errors, _ = validate(cfg, bad)
+    assert any("nest" in e for e in errors)

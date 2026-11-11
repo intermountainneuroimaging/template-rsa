@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "SKELETON for a delayed-recall working-memory task (see docs/working_memory_rsa.md): events.tsv has one row per trial phase (trial_type = encoding | delay | probe) and a 'stimulus' column (here 4 orientations). Items are phase x stimulus, so one crossnobis RDM contains the within-encoding, within-delay and encoding-vs-delay blocks. Probe events are modeled as nuisance regressors (model_unlabeled_events). Paths and stimulus values are placeholders.",
+  "notes": "SKELETON for a delayed-recall working-memory task (see docs/working_memory_rsa.md): events.tsv has one row per trial phase (trial_type = encoding | delay | probe), a 'stimulus' column (here 4 orientations) and a 'phase_stimulus' column naming the phase x stimulus exemplar (encoding_0 ... delay_135), so the hierarchy trial_type > phase_stimulus nests. One crossnobis RDM then contains the within-encoding, within-delay and encoding-vs-delay blocks. Incorrect trials fail item_filter and, like the probes, are modeled as nuisance regressors. Stimulus identity crosses the phases, so its model lists explicit groups. Paths and stimulus values are placeholders.",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",
@@ -9,164 +9,23 @@
     "events_glob": "sub-*/func/*_task-wm_*_events.tsv",
     "output_file": "out/wm/master_spreadsheet.csv"
   },
-  "conditions": {
-    "include": {
+  "events": {
+    "hierarchy": [
+      "trial_type",
+      "phase_stimulus"
+    ],
+    "item_types": [
+      "encoding",
+      "delay"
+    ],
+    "item_filter": {
       "column": "correct",
       "match": "exact",
       "value": "1"
-    },
-    "items": {
-      "enc_0": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "encoding"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "0"
-          }
-        ]
-      },
-      "enc_45": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "encoding"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "45"
-          }
-        ]
-      },
-      "enc_90": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "encoding"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "90"
-          }
-        ]
-      },
-      "enc_135": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "encoding"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "135"
-          }
-        ]
-      },
-      "delay_0": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "delay"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "0"
-          }
-        ]
-      },
-      "delay_45": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "delay"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "45"
-          }
-        ]
-      },
-      "delay_90": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "delay"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "90"
-          }
-        ]
-      },
-      "delay_135": {
-        "and": [
-          {
-            "column": "trial_type",
-            "match": "exact",
-            "value": "delay"
-          },
-          {
-            "column": "stimulus",
-            "match": "exact",
-            "value": "135"
-          }
-        ]
-      }
-    },
-    "attributes": {
-      "enc_0": {
-        "stimulus": "0",
-        "phase": "enc"
-      },
-      "enc_45": {
-        "stimulus": "45",
-        "phase": "enc"
-      },
-      "enc_90": {
-        "stimulus": "90",
-        "phase": "enc"
-      },
-      "enc_135": {
-        "stimulus": "135",
-        "phase": "enc"
-      },
-      "delay_0": {
-        "stimulus": "0",
-        "phase": "delay"
-      },
-      "delay_45": {
-        "stimulus": "45",
-        "phase": "delay"
-      },
-      "delay_90": {
-        "stimulus": "90",
-        "phase": "delay"
-      },
-      "delay_135": {
-        "stimulus": "135",
-        "phase": "delay"
-      }
     }
   },
   "pattern_estimation": {
     "method": "glm",
-    "unit": "condition_per_run",
     "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-wm_*_space-T1w_desc-brain_mask.nii.gz",
     "model_unlabeled_events": true,
     "confounds": {
@@ -179,7 +38,7 @@
         "non_steady_state"
       ],
       "motion": "full",
-      "scrub": 0,
+      "min_segment_volumes": 0,
       "fd_threshold": 0.5,
       "std_dvars_threshold": 1.5
     },
@@ -218,19 +77,19 @@
       "type": "feature",
       "metric": "euclidean",
       "features": {
-        "enc_0": [
+        "encoding_0": [
           1.0,
           0.0
         ],
-        "enc_45": [
+        "encoding_45": [
           0.0,
           1.0
         ],
-        "enc_90": [
+        "encoding_90": [
           -1.0,
           0.0
         ],
-        "enc_135": [
+        "encoding_135": [
           -0.0,
           -1.0
         ],
@@ -254,11 +113,20 @@
     },
     "stimulus_identity": {
       "type": "categorical",
-      "attribute": "stimulus"
+      "groups": {
+        "encoding_0": "0",
+        "encoding_45": "45",
+        "encoding_90": "90",
+        "encoding_135": "135",
+        "delay_0": "0",
+        "delay_45": "45",
+        "delay_90": "90",
+        "delay_135": "135"
+      }
     },
     "phase": {
       "type": "categorical",
-      "attribute": "phase"
+      "level": "trial_type"
     }
   },
   "weighted_models": {

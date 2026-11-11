@@ -16,7 +16,7 @@ Stage 4: group-level RSA for every ROI.
 Outputs (under <output_dir>/group/):
   roi-<roi>/group_roi-<roi>_mean-rdm.{csv,png}, _mds.png, _models.png, _pairwise.csv
   roi-<roi>/group_roi-<roi>_mean-pattern-rdm.{csv,png}  (subjects' pattern-level RDMs averaged,
-                                                         patterns matched by item and position in block)
+                                                         patterns matched by row and position in block)
   group_model-comparison.csv   (one row per ROI x model)
 
 Usage:
@@ -33,11 +33,11 @@ import pandas as pd
 from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import build_model_rdms, build_weighted_models, item_names, load_config
+from utils.rsa_common import build_model_rdms, build_weighted_models, load_config, rdm_level, row_names
 from utils.rsa_plots import plot_mds, plot_models, plot_pattern_rdm, plot_rdm, plot_weights
 
 
-def load_subject_rdms(output_dir: str, roi: str, items: list, subjects=None):
+def load_subject_rdms(output_dir: str, roi: str, items: list, level: str, subjects=None):
     import rsatoolbox
 
     paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", f"roi-{roi}", f"sub-*_roi-{roi}_rdm.hdf5")))
@@ -46,23 +46,26 @@ def load_subject_rdms(output_dir: str, roi: str, items: list, subjects=None):
         rdms = [r for r in rdms if r.rdm_descriptors["subject"][0] in subjects]
     if not rdms:
         return None
-    common = [i for i in items if all(i in set(r.pattern_descriptors["item"]) for r in rdms)]
+    if any(level not in r.pattern_descriptors for r in rdms):
+        raise SystemExit(f"ROI {roi}: subject RDMs have no {level!r} rows -- re-run the subject stages "
+                         "(events.hierarchy or pattern_estimation.level changed)")
+    common = [i for i in items if all(i in set(r.pattern_descriptors[level]) for r in rdms)]
     aligned = []
     for r in rdms:
         r.descriptors.pop("noise", None)  # RDMs saved before rsa_common dropped it
-        r = r.subset_pattern("item", common)
-        order = list(r.pattern_descriptors["item"])
+        r = r.subset_pattern(level, common)
+        order = list(r.pattern_descriptors[level])
         r.reorder([order.index(i) for i in common])
         aligned.append(r)
     return rsatoolbox.rdm.concat(aligned)
 
 
 def mean_pattern_rdm(output_dir: str, roi: str, subjects=None):
-    """Average subjects' pattern-level RDMs. Patterns are matched by item and by position
-    within the item's block (the k-th 'face' pattern in run/trial order), since trial numbers
-    and missing runs differ between subjects; each item keeps as many patterns as the subject
+    """Average subjects' pattern-level RDMs. Patterns are matched by RDM row and by position
+    within the row's block (the k-th 'face' pattern in run/event order), since event numbers
+    and missing runs differ between subjects; each row keeps as many patterns as the subject
     with the fewest has. A visualization of the shared block structure, not a test.
-    Returns (frame labelled 'item|k', n_subjects) or (None, 0)."""
+    Returns (frame labelled '<row>|k', n_subjects) or (None, 0)."""
     paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", f"roi-{roi}", f"sub-*_roi-{roi}_pattern-rdm.csv")))
     if subjects:
         paths = [p for p in paths if os.path.basename(p).split("_")[0][4:] in subjects]
@@ -238,7 +241,7 @@ def crossval_stats(data_rdms, model_rdms, cfg):
 
 
 def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
-    items = item_names(cfg)
+    items, level = row_names(cfg), rdm_level(cfg)
     method = cfg["comparison"]["method"]
     sub_tables = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", "sub-*_model-comparison.csv")))
     sims_long = pd.concat([pd.read_csv(p, dtype={"subject": str}) for p in sub_tables], ignore_index=True) \
@@ -250,7 +253,7 @@ def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
 
     summaries = []
     for roi in cfg["rois"]:
-        data_rdms = load_subject_rdms(output_dir, roi, items, subjects)
+        data_rdms = load_subject_rdms(output_dir, roi, items, level, subjects)
         if data_rdms is None:
             print(f"  (!) no subject RDMs for ROI {roi}; skipped")
             continue
@@ -258,11 +261,11 @@ def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
         os.makedirs(roi_dir, exist_ok=True)
         prefix = os.path.join(roi_dir, f"group_roi-{roi}")
         n = data_rdms.n_rdm
-        print(f"ROI {roi}: {n} subject(s), {data_rdms.n_cond} items")
+        print(f"ROI {roi}: {n} subject(s), {data_rdms.n_cond} {level} rows")
 
         mean_frame = pd.DataFrame(data_rdms.get_matrices().mean(axis=0),
-                                  index=data_rdms.pattern_descriptors["item"],
-                                  columns=data_rdms.pattern_descriptors["item"])
+                                  index=data_rdms.pattern_descriptors[level],
+                                  columns=data_rdms.pattern_descriptors[level])
         mean_frame.to_csv(prefix + "_mean-rdm.csv")
         plot_rdm(mean_frame, f"{roi}: mean RDM (n={n}, {cfg['rdm']['method']})", prefix + "_mean-rdm.png")
         if len(mean_frame) >= 3:
@@ -281,7 +284,7 @@ def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
         sims = roi_long.pivot(index="subject", columns="model", values="similarity")
         sims = sims[[m for m in cfg["model_rdms"] if m in sims.columns]]
         if cfg["group"]["test"] == "bootstrap":
-            model_rdms = build_model_rdms(cfg).subset_pattern("item", list(data_rdms.pattern_descriptors["item"]))
+            model_rdms = build_model_rdms(cfg).subset_pattern(level, list(data_rdms.pattern_descriptors[level]))
             per_model, pairwise = bootstrap_stats(data_rdms, model_rdms, cfg)
         else:
             per_model, pairwise = random_effects_stats(sims, cfg["group"])
@@ -300,7 +303,7 @@ def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
             if n < 3:
                 print(f"  (!) weighted_models need >=3 subjects for cross-validation; skipped ({n})")
                 continue
-            model_rdms = build_model_rdms(cfg).subset_pattern("item", list(data_rdms.pattern_descriptors["item"]))
+            model_rdms = build_model_rdms(cfg).subset_pattern(level, list(data_rdms.pattern_descriptors[level]))
             cv, folds, cv_pairs, weights = crossval_stats(data_rdms, model_rdms, cfg)
             cv.insert(0, "roi", roi)
             cv["scheme"] = cfg["group"]["crossval"]["scheme"]

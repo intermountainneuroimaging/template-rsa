@@ -22,10 +22,10 @@ rsaworkflow/
 │   └── validate_rsa_config.py     # stage 1b: check the config against the event table
 ├── workflows/
 │   ├── generate_master_spreadsheet.py   # stage 1: BIDS events.tsv -> one row per event
-│   ├── estimate_patterns.py             # stage 2: one pattern image per item x run, or per trial (LSA / LSS)
+│   ├── estimate_patterns.py             # stage 2: one pattern image per exemplar / condition x run, or per item (LSA / LSS)
 │   ├── rsa_workflow.py                  # stage 3: subject RDMs per ROI / searchlight + model comparison
 │   ├── group_rsa.py                     # stage 4: mean RDM, MDS, noise ceiling, group inference, weighted models
-│   ├── template_rsa.py                  # stage 3t: feature-weighted item-template RSA (lab method; docs/lab_methods.md)
+│   ├── template_rsa.py                  # stage 3t: feature-weighted exemplar-template RSA (lab method; docs/lab_methods.md)
 │   ├── group_template_rsa.py            # stage 4t: template-RSA timecourses, contrasts, mixed models
 │   ├── generate_report.py               # stage 5: multi-page PDF report (group, or one subject)
 │   └── run_pipeline.py                  # all stages locally, from one config
@@ -85,21 +85,42 @@ PYTHON=~/.venvs/rsaworkflow/bin/python SBATCH_EXTRA="--account=X --partition=Y" 
 
 Relative paths in the config are resolved against the directory you run from (the repo root).
 
+## Structuring events.tsv
+
+Every events.tsv row is an **event**. The rows you want patterns for carry the stimulus hierarchy as columns, coarse to fine, and the config names those columns in `events.hierarchy`:
+
+```
+onset  duration  trial_type  category  subcategory  exemplar
+10.0   2.0       stim        animal    mammal       dog01      <- item (one event of interest)
+14.0   1.0       probe       n/a       n/a          n/a        <- nuisance
+16.0   8.0       rest        n/a       n/a          n/a        <- baseline (events.baseline_types)
+22.0   2.0       stim        animal    mammal       dog01      <- item: a repeat of exemplar dog01
+```
+
+| term | meaning |
+|---|---|
+| event | one events.tsv row |
+| item | one event of interest: a value at every hierarchy level (and, if set, a `trial_type` in `events.item_types` and passing `events.item_filter`) |
+| exemplar | the finest hierarchy level: all repeats of the same stimulus |
+| condition | any coarser level (category, subcategory, ...): the exemplars nested in it |
+
+Each level must nest in the one above it (an exemplar always has the same category); the validator checks this. Every other event is a **nuisance** event, with its own regressor per `trial_type`, unless its `trial_type` is in `events.baseline_types`, in which case it is left unmodeled as the baseline. `pattern_estimation.level` picks what one pattern is: `"item"` (one per event of interest) or a hierarchy level (that level's items pooled per run; default: the finest). Categorical model RDMs name a coarser level, so no attribute tables are needed. Factors that cross the hierarchy, such as a task operation or a memory outcome, stay as ordinary columns: use them in `item_filter`, in template-RSA event queries, in post-hoc notebooks, or as an explicit `groups` model. A crossed design (phase x stimulus) gets a column naming the combination (`encoding_0`), as in [examples/config-wm-delay.example.json](examples/config-wm-delay.example.json).
+
 ## Pipeline stages
 
-1. **Event table** (`event_extraction`). Every `events.tsv` under `bids_root` is matched to its preprocessed BOLD file (`derivatives_root` + `bold_glob`, with `{subject}`, `{session}`, `{task}` and `{run}` filled from the events filename). The output has one row per event and keeps every events.tsv column, plus `subject`, `session`, `task`, `run`, `run_id`, `trial_index`, `tr`, `n_frames` and `boldfile`. Fixation, block-marker and post-RT rows are dropped, as in mvpa-decoding.
-2. **Validation.** Checks query syntax and that each item matches events for every subject. It also checks model attributes, features and files against the items, that mask files exist, that method names are valid, and that cross-validated methods have at least 2 runs. Overlapping items produce a warning.
-3. **Patterns** (`pattern_estimation`). Produces one 3-D image per item per run (`condition_per_run`) or per event (`trial`). Every run of a subject uses the same brain mask. If `mask_pattern` matches several files (e.g. fMRIPrep's per-run `desc-brain_mask`), their intersection is used. Nuisance handling is described [below](#preprocessing-fmriprep-inputs).
-   - `glm`: a nilearn GLM per run. Events that match no item are modeled as nuisance regressors. Saves t, z or beta maps. For `unit: "trial"`, `glm.trial_model` picks how single trials are estimated:
-     - `lss` (default): least-squares-separate (Mumford et al., 2012). One GLM per trial, with that trial as the only regressor of interest. With `lss_other: "condition"`, the other trials are grouped by item (LSS-N); with `"single"`, they share one regressor. The run is loaded once, and each trial costs one design matrix and one fit.
-     - `lsa`: least-squares-all. One GLM per run, with every trial as its own regressor. This is fine for slow designs, but the estimates get noisy when trials overlap in time.
+1. **Event table** (`event_extraction`). Every `events.tsv` under `bids_root` is matched to its preprocessed BOLD file (`derivatives_root` + `bold_glob`, with `{subject}`, `{session}`, `{task}` and `{run}` filled from the events filename). The output has one row per event and keeps every events.tsv column, plus `subject`, `session`, `task`, `run`, `run_id`, `event_index`, `tr`, `n_frames` and `boldfile`. Fixation, block-marker and post-RT rows are dropped, as in mvpa-decoding.
+2. **Validation.** Checks that the `events.hierarchy` columns exist and nest, that every item row has a value at every level, that values don't collide as file names, and that every RDM row has items for every subject. It also checks models against the RDM rows (levels coarser than the rows, complete `groups` / `features`, matrix sizes), that mask files exist, that method names are valid, and that cross-validated methods have at least 2 runs.
+3. **Patterns** (`pattern_estimation`). Produces one 3-D image per value of `level` per run (e.g. per exemplar, pooling its repeats), or per item (`level: "item"`). The pattern index carries the hierarchy columns down to the RDM level. Every run of a subject uses the same brain mask. If `mask_pattern` matches several files (e.g. fMRIPrep's per-run `desc-brain_mask`), their intersection is used. Nuisance handling is described [below](#preprocessing-fmriprep-inputs).
+   - `glm`: a nilearn GLM per run. Nuisance events get their own regressors. Saves t, z or beta maps. For `level: "item"`, `glm.item_model` picks how single items are estimated:
+     - `lss` (default): least-squares-separate (Mumford et al., 2012). One GLM per item, with that item as the only regressor of interest. With `lss_other: "by_label"`, the other items are grouped by their exemplar (LSS-N); with `"single"`, they share one regressor. The run is loaded once, and each item costs one design matrix and one fit.
+     - `lsa`: least-squares-all. One GLM per run, with every item as its own regressor. This is fine for slow designs, but the estimates get noisy when items overlap in time.
    - `volume_average`: cleans the run (detrend, z-score, optional high-pass), then averages the volumes each event spans, shifted by `hemodynamic_lag`.
 4. **Subject RSA** (`rois`, `searchlight`, `rdm`, `model_rdms`, `comparison`). For each ROI:
    - Masks the patterns and drops dead voxels.
-   - Computes the RDM with `rdm.method`: patterns of the same item are averaged, or cross-validated over `cv_descriptor` folds for crossnobis and poisson_cv.
+   - Computes the RDM with `rdm.method`: patterns of the same RDM row (e.g. an exemplar's runs, or its items) are averaged, or cross-validated over `cv_descriptor` folds for crossnobis and poisson_cv.
    - Compares the RDM with each model RDM.
 
-   It also writes a **pattern-level RDM** (`rdm.pattern_rdm`, on by default). Every single pattern (each item × run, or each trial) gets its own row, grouped by item, and nothing is averaged. This view shows item structure as diagonal blocks and exposes run effects, drift and outlier runs as stripes, all of which the item RDM hides. Cross-validated distances don't apply to single patterns, so it uses `rdm.pattern_rdm.method`, or `rdm.method` if that is correlation, Euclidean or Mahalanobis, and falls back to correlation otherwise.
+   It also writes a **pattern-level RDM** (`rdm.pattern_rdm`, on by default). Every single pattern (each exemplar × run, or each item) gets its own row, grouped by RDM row, and nothing is averaged. This view shows the row structure as diagonal blocks and exposes run effects, drift and outlier runs as stripes, all of which the averaged RDM hides. Cross-validated distances don't apply to single patterns, so it uses `rdm.pattern_rdm.method`, or `rdm.method` if that is correlation, Euclidean or Mahalanobis, and falls back to correlation otherwise.
 
    The optional searchlight writes one native-space model-fit map per model.
 5. **Group** (`group`). Computes the mean RDM and an MDS plot, plus a leave-one-subject-out noise ceiling (Nili et al., 2014). Models are tested against 0 and against each other with one of three methods:
@@ -112,10 +133,10 @@ Relative paths in the config are resolved against the directory you run from (th
    **Weighted models** (`weighted_models`) combine existing model RDMs with fitted, non-negative weights (rsatoolbox `ModelWeighted`). Extra free parameters would inflate an in-sample fit, so these models are evaluated by cross-validation over subjects (`group.crossval`, rsatoolbox `crossval`): weights are fit on the training subjects and scored on the held-out subject. By default the fixed models are scored in the same folds, so all models are directly comparable. The stage tests fold scores against 0 and compares each weighted model with each of its components. It also reports the cross-validated noise ceiling and the weights fit on all subjects.
 6. **Report.** A PDF with these pages:
    - Analysis settings.
-   - Pattern inventory: patterns per subject and item.
+   - Pattern inventory: patterns per subject and RDM row.
    - The model RDMs.
    - For each ROI: the mean RDM, MDS, fixed and cross-validated model fits with noise ceiling, weights, statistics tables, and every subject's RDM.
-   - For each ROI: the pattern-level RDM averaged over subjects (patterns matched by item and by position within the item's block, so trial-level data average too), followed by every subject's pattern-level RDM.
+   - For each ROI: the pattern-level RDM averaged over subjects (patterns matched by RDM row and by position within the row's block, so item-level data average too), followed by every subject's pattern-level RDM.
 
    The `--subject` version shows one subject's RDMs, MDS and model fits.
 
@@ -127,7 +148,7 @@ The pipeline assumes minimally preprocessed data: fMRIPrep's `desc-preproc_bold`
 |---|---|---|
 | **Nuisance regression** | `confounds: {"source": "fmriprep", "strategy": [...], ...}` | nilearn [`load_confounds`](https://nilearn.github.io/stable/modules/generated/nilearn.interfaces.fmriprep.load_confounds.html) reads the run's `desc-confounds_timeseries.tsv`. Strategies: `motion` (`basic` 6, `derivatives` / `power2` 12, `full` 24), `wm_csf`, `global_signal`, `compcor` (+ `n_compcor`), `high_pass` (fMRIPrep cosines), `ica_aroma`, `scrub`, `non_steady_state`. For `glm`, the confounds go into the design matrix. For `volume_average`, they are regressed out in the cleaning step. |
 | | `confounds: {"source": "file", "file_pattern", "columns", "regex"}` | Explicit columns from any TSV |
-| **Censoring / scrubbing** | `confounds.strategy` with `scrub` (`fd_threshold`, `std_dvars_threshold`, `scrub` min segment) and/or `non_steady_state`; `censoring.drop_initial_volumes` | Flagged volumes are dropped from the fit (`censoring.mode: "censor"`), or modeled with one spike regressor each (`"regress"`, which keeps the time series continuous). For LSS, design matrices are built on the full timeline before censored rows are dropped, as `FirstLevelModel` does. For `volume_average`, censored volumes are excluded from the event averages. |
+| **Censoring / scrubbing** | `confounds.strategy` with `scrub` (`fd_threshold`, `std_dvars_threshold`, and `min_segment_volumes`: good-volume runs shorter than this between outliers are also censored; 0 = outliers only, omitted = nilearn's 5) and/or `non_steady_state`; `censoring.drop_initial_volumes` | Flagged volumes are dropped from the fit (`censoring.mode: "censor"`), or modeled with one spike regressor each (`"regress"`, which keeps the time series continuous). For LSS, design matrices are built on the full timeline before censored rows are dropped, as `FirstLevelModel` does. For `volume_average`, censored volumes are excluded from the event averages. |
 | **Temporal filtering** | `glm.drift_model` + `glm.high_pass`; `volume_average.high_pass` / `low_pass` / `detrend` | GLM: cosine drift regressors (the usual approach). Set `drift_model: null` when you use fMRIPrep's `high_pass` cosines instead; the validator warns if you use both. `volume_average`: Butterworth band-pass in nilearn `signal.clean`. |
 | **Prewhitening** | `glm.noise_model` | `"ar1"` (default), `"arN"` (e.g. `"ar2"`), or `"ols"` (none). This applies to the per-run GLM and to every LSS fit. |
 | **Scaling** | `glm.signal_scaling` | `0` scales each voxel to percent signal change (default); `False` does no scaling. |
@@ -151,17 +172,17 @@ Top-level sections (defaults live in `utils/rsa_common.py::default_config`):
 | Section | Keys |
 |---|---|
 | `event_extraction` | `bids_root`, `derivatives_root`, `bold_glob`, `events_glob`, `output_file` |
-| `conditions` | `items`: `{name: query}`; the RDM row order is the key order. `attributes`: `{name: {attr: value}}`, used by categorical models. Or, instead of `items`: `item_column` (every distinct value of that events.tsv column is an item) with `attribute_columns` (attributes read from other columns). `include`: optional query that drops events before anything else. |
-| `pattern_estimation` | `method` (`glm` or `volume_average`), `unit` (`condition_per_run` or `trial`), `mask_pattern` (a glob; multiple matches are intersected), `model_unlabeled_events`. `confounds`: `source` (`fmriprep` or `file`) plus `load_confounds` kwargs, or `file_pattern` / `columns` / `regex`. `censoring`: `drop_initial_volumes`, `mode` (`censor` or `regress`). `glm`: `output_type` (`t`, `z` or `beta`), `trial_model` (`lss` or `lsa`), `lss_other` (`condition` or `single`), and any `FirstLevelModel` kwarg (`noise_model`, `drift_model`, `high_pass`, `signal_scaling`, `smoothing_fwhm`, `hrf_model`, …). `volume_average`: `hemodynamic_lag`, `detrend`, `standardize`, `high_pass`, `low_pass`, `smoothing_fwhm`. |
+| `events` | `hierarchy`: events.tsv columns, coarse to fine (e.g. `["category", "subcategory", "exemplar"]`). `item_types`: `trial_type` values that are items (default: any row with a full hierarchy). `baseline_types`: `trial_type` values left unmodeled. `item_filter`: optional query; item rows failing it become nuisance events (e.g. incorrect trials). RDM rows are the values of the RDM level, ordered by their parent levels. See [Structuring events.tsv](#structuring-eventstsv). |
+| `pattern_estimation` | `method` (`glm` or `volume_average`), `level` (`item` or a hierarchy level; default the finest), `mask_pattern` (a glob; multiple matches are intersected), `model_unlabeled_events`. `confounds`: `source` (`fmriprep` or `file`) plus `load_confounds` kwargs, or `file_pattern` / `columns` / `regex`. `censoring`: `drop_initial_volumes`, `mode` (`censor` or `regress`). `glm`: `output_type` (`t`, `z` or `beta`), `item_model` (`lss` or `lsa`), `lss_other` (`by_label` or `single`), and any `FirstLevelModel` kwarg (`noise_model`, `drift_model`, `high_pass`, `signal_scaling`, `smoothing_fwhm`, `hrf_model`, …). `volume_average`: `hemodynamic_lag`, `detrend`, `standardize`, `high_pass`, `low_pass`, `smoothing_fwhm`. |
 | `rois` | `{name: {mask_pattern}}` |
 | `searchlight` | `enabled`, `mask_pattern`, `radius_voxels`, `threshold`, `n_jobs` |
 | `rdm` | `method` (`correlation`, `euclidean`, `mahalanobis`, `crossnobis`, `poisson` or `poisson_cv`), `cv_descriptor`, `noise.method` (`shrinkage_diag`, `shrinkage_eye`, `diag` or `full`), `remove_voxel_mean`. `pattern_rdm`: `enabled` (default true), `method` (`correlation`, `euclidean` or `mahalanobis`; default: see above). |
-| `model_rdms` | `{name: spec}`, where spec is one of:<br>`{"type": "categorical", "attribute": a}`: 0 if two items share the attribute, else 1<br>`{"type": "feature", "features": {item: vector}, "metric": ...}`<br>`{"type": "file", "path": "n_items x n_items .csv/.tsv/.npy"}` |
+| `model_rdms` | `{name: spec}`, where spec is one of:<br>`{"type": "categorical", "level": l}`: 0 if two rows share their value at the coarser hierarchy level `l`, else 1<br>`{"type": "categorical", "groups": {row: group}}`: the same for a grouping that crosses the hierarchy<br>`{"type": "feature", "features": {row: vector}, "metric": ...}`<br>`{"type": "file", "path": "n_rows x n_rows .csv/.tsv/.npy"}` |
 | `weighted_models` | `{name: {"components": [model_rdms names], "fitter": f}}`, where `f` is one of:<br>`optimize_positive` (default; non-negative weights, works with any comparison method)<br>`optimize`<br>`regress_nn` or `regress` (only with `corr`, `cosine`, `corr_cov` or `cosine_cov`) |
 | `comparison` | `method`: any `rsatoolbox.rdm.compare` method (`corr`, `spearman`, `tau-a`, `rho-a`, `cosine`, `corr_cov`, `cosine_cov`, …) |
 | `group` | `test` (`ttest`, `wilcoxon` or `bootstrap`), `alternative`, `noise_ceiling`, `multiple_comparisons` (a statsmodels method or `none`), `n_bootstrap`, `random_state`. `crossval`: `scheme` (`leave_one_subject_out` or `k_fold`), `k`, `include_fixed` (used by `weighted_models`; needs ≥3 subjects). |
 | `rois` (atlas form) | `{name: {"atlas_pattern", "labels": [int, ...]}}`, the union of labels from a label image (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid |
-| `template_rsa` | `rois`, `item_column`, `category_column`, `subcategory_column`. `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query; select a subset of items through the event naming, e.g. a `trial_type` regex `new_.*`), `window`. `feature_weighting`: `levels` (`item`, `category`, `none`), `item_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_sets` (`{name: {"column", "level": item / category / subcategory}}`), and `group` (`group_by`, `comparisons`; descriptive only). Study-specific post-hoc settings, such as contrasts, reference conditions and previous-trial columns, are rejected here with a pointer to the notebooks. Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
+| `template_rsa` | `rois`, `category_level`, `subcategory_level` (hierarchy levels; exemplars are the finest level; default category: the coarsest level). `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query; select a subset of exemplars through the event naming, e.g. a `trial_type` regex `new_.*`), `window`. `feature_weighting`: `levels` (`exemplar`, `category`, `none`), `exemplar_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_sets` (`{name: {"column", "level": exemplar / category / subcategory}}`), and `group` (`group_by`, `comparisons`; descriptive only). Study-specific post-hoc settings, such as contrasts, reference conditions and previous-trial columns, are rejected here with a pointer to the notebooks. Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
 | `pipeline` | `output_dir`, `subjects`, `analyses` (`rdm` and/or `template`) |
 
 Queries use the same grammar as mvpa-decoding:
@@ -203,11 +224,11 @@ See [tutorial/README.md](tutorial/README.md). It uses Haxby et al. (2001): 6 sub
 
 `pipeline.analyses: ["template"]` runs the Lewis-Peacock / Banich lab's feature-weighted template matching (Kim et al., 2020; Bretton et al., 2024) instead of, or alongside, `"rdm"`. Each step is set in the `template_rsa` config section:
 
-1. Item templates come from a template phase, such as a localizer or a pre-test.
+1. Exemplar templates come from a template phase, such as a localizer or a pre-test.
 2. Voxels are restricted to category-selective masks (GLM t-contrast, p < .05, cluster ≥ 10).
-3. Patterns are weighted by item-vs-others (LSA) or category t-maps.
-4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other items' templates. `extra_sets` adds the templates named in any other event column, such as the replacement category on replace trials.
-5. The group stage stacks every subject's scores into one **group raw table** per ROI and target set, at `group/template_rsa/raw/`. It also writes descriptive subject means and summaries, and a check that the target scores above the related and other items.
+3. Patterns are weighted by exemplar-vs-others (LSA) or category t-maps.
+4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other exemplars' templates. `extra_sets` adds the templates named in any other event column, such as the replacement category on replace trials.
+5. The group stage stacks every subject's scores into one **group raw table** per ROI and target set, at `group/template_rsa/raw/`. It also writes descriptive subject means and summaries, and a check that the target scores above the related and other exemplars.
 
 The core stops there; it is the same for any design. **Study-specific statistics live in notebooks** in [_interactive_notebooks/](_interactive_notebooks/README.md), as in mvpa-decoding. They start from the raw table, which carries every events.tsv column. Examples:
 

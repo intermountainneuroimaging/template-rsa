@@ -6,7 +6,7 @@ The core pipeline is design-agnostic. It builds templates, scores target events 
 
 Each table has one row per subject × event × [volume] × weighting level × comparison set. Every events.tsv column rides along. Anything specific to a study design starts from that table, in a notebook here, as in mvpa-decoding:
 
-- which conditions to compare
+- which operations or groups to compare
 - what counts as remembered
 - which previous trial matters
 - baseline and reference conventions
@@ -20,7 +20,7 @@ Each table has one row per subject × event × [volume] × weighting level × co
 [rsa_posthoc_common.py](rsa_posthoc_common.py) holds what the notebooks share. It knows nothing about any study:
 
 - **loading:** the group raw table and the event table
-- **table helpers:** previous-trial columns, item attributes joined across phases
+- **table helpers:** previous-trial columns, exemplar columns joined across phases
 - **aggregation:** subject means, baseline correction, reference subtraction
 - **statistics:** bins, one-sample tests with FDR, rm-ANOVA, pairwise tests, paired contrasts with bootstrap CIs, mixed models
 - **plots, outputs, toy data**

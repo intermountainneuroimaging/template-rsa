@@ -18,13 +18,15 @@ Code is split in two:
 
 ## 0. What kind of RSA this is, and what changed in the workflow
 
+> **Vocabulary.** This document follows the papers: an *item* is one specific picture (a face, a scene). The pipeline calls that an **exemplar**, the finest level of `events.hierarchy` (here `category > subcategory > stimulus`), and keeps *item* for a single event of interest. So the papers' "item-level templates / weights" are `feature_weighting.levels: ["exemplar"]` and `exemplar_contrast` in the config, and the task operation is in an `operation` column (not "condition", which the pipeline uses for a coarser hierarchy level).
+
 The lab's "RSA" is **feature-weighted template matching**: item-level pattern similarity between a template phase and a target phase. It is not the classic Kriegeskorte-style comparison of a data RDM with model RDMs.
 
 - Each item gets a *template*, an activity pattern from a phase where it was perceived (the localizer in [K], the pre-manipulation memory test in [B]).
 - Later patterns are scored by their Pearson correlation with the templates. The patterns come from the WM task in [K] and from the post-manipulation test in [B].
 - Voxels are first restricted to category-selective voxels and then weighted by item-selective (or category-selective) GLM t-values.
 
-The existing config (`conditions.items` → RDM → `model_rdms`) has no slot for templates, target phases, weights, comparison sets or timecourses. So the workflow was extended rather than bent to fit:
+The RDM config (`events.hierarchy` → RDM → `model_rdms`) has no slot for templates, target phases, weights, comparison sets or timecourses. So the workflow was extended rather than bent to fit:
 
 | Change | Where |
 |---|---|
@@ -34,7 +36,7 @@ The existing config (`conditions.items` → RDM → `model_rdms`) has no slot fo
 | Atlas-label ROIs: `{"atlas_pattern", "labels"}` (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid | `rsa_common.py::resolve_roi_mask` (used by both analysis families) |
 | Subject stage, group stage and report pages for template RSA | `template_rsa.py`, `group_template_rsa.py`, `generate_report.py::template_pages` |
 | **Core / post-hoc split.** The core stops at a group raw table (`group/template_rsa/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
-| `extra_sets`: score a trial against the templates named in any events column, at item, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
+| `extra_sets`: score a trial against the templates named in any events column, at exemplar, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
 
 The config layout deliberately mirrors mvpa-decoding: `templates` ≈ `training`, `targets` ≈ `testing` / `timecourse_decoding`, and `window` uses the same syntax. A lab config can therefore hold both the decoding and the RSA settings for one study.
 
@@ -92,8 +94,8 @@ For [B]'s **category-level templates**, $w_i(v) = t_{c(i)}(v)$, the category con
 
 **Workflow:**
 
-- `feature_weighting.item_contrast` takes `all_others`, `within_category` or `within_subcategory`.
-- `feature_weighting.levels` takes `item`, `category` and/or `none`, and every level listed is computed side by side.
+- `feature_weighting.exemplar_contrast` takes `all_others`, `within_category` or `within_subcategory`.
+- `feature_weighting.levels` takes `exemplar` (the papers' item level), `category` and/or `none`, and every level listed is computed side by side.
 - Both GLMs are fit as **one concatenated model** across runs. Item and category regressors are shared; drift, intercept, nuisance events and confounds are run-specific. This is how SPM does it, and it handles items seen in only one run [B]. Code: `template_rsa.py::concat_glm`.
 
 ### 1.5 Templates
@@ -124,7 +126,7 @@ The sets, for a trial whose item is $i^\*$:
 - **target** $= \{i^\*\}$
 - **related** $= \{j\neq i^\*: c(j)=c(i^\*)\}$, other items of the same category
 - **others** $= \{j: c(j)\neq c(i^\*)\}$, items of other categories
-- Optional named sets from other event columns (`extra_sets`): $\{j: \ell(j) = e[\text{column}]\}$ for a level $\ell \in$ {item, category, subcategory}. For example, on [K]'s replace trials, every template of the category switched to (`replacement`). The paper tracked the replacement with the category classifier; this is its item-RSA counterpart.
+- Optional named sets from other event columns (`extra_sets`): $\{j: \ell(j) = e[\text{column}]\}$ for a level $\ell \in$ {exemplar, category, subcategory}. For example, on [K]'s replace trials, every template of the category switched to (`replacement`). The paper tracked the replacement with the category classifier; this is its item-RSA counterpart.
 
 **Workflow:** `targets.<set>.related_level` (category or subcategory), `targets.<set>.extra_sets`, `feature_weighting.weight_target_patterns` → `template_rsa.py::comparison_sets`, `extra_sets`, `score_matrix` (vectorized over all volumes of a run), `TemplateSet.score`.
 
@@ -135,12 +137,12 @@ Trials are averaged within subject before any t-test. Mixed models use every tri
 **Timecourse [K, Fig. 4].** For trial $n$ with onset $o_n$:
 
 - Score the unshifted volumes $k=0,\dots,29$ from trial onset (30 TRs = 13.8 s): $S^{(n)}_A(k)$.
-- Average per subject × condition × $k$.
+- Average per subject × operation × $k$.
 - Baseline: subtract each curve's mean over $k\in[0,6)$, the first 2.76 s.
 - Removal relative to maintenance: $\Delta_\text{op}(k) = S_\text{op}(k) - S_\text{maintain}(k)$.
 - Test window $k = 6..20$ (TRs 7–21), split into five 3-TR blocks. In each block:
-  - one-sample t-test vs 0 per condition (removal onset = first block below 0)
-  - repeated-measures ANOVA across conditions
+  - one-sample t-test vs 0 per operation (removal onset = first block below 0)
+  - repeated-measures ANOVA across operations
   - pairwise paired t-tests, FDR-corrected
 
 Replacement tracking is analysed the same way: on replace trials, the `replacement` set and the replaced item (`target`), both baseline-corrected, each tested against 0 per bin, plus their difference (the crossover).
@@ -156,8 +158,8 @@ Replacement tracking is analysed the same way: on replace trials, the `replaceme
 
 **Workflow:** core target set `encoding_fidelity` (window mean, + 4.6 s). The analysis is in the Kim notebook, sections 4–5:
 
-- `add_previous_trial_columns(..., ["category", "condition"], matches={"same_replacement": ("replace_category", "category")})` runs on the **full** trial sequence, before exclusions, so "previous trial" always means the trial actually shown.
-- Then trials following excluded conditions are dropped, along with the replace-overlap trials.
+- `add_previous_trial_columns(..., ["category", "operation"], matches={"same_replacement": ("replace_category", "category")})` runs on the **full** trial sequence, before exclusions, so "previous trial" always means the trial actually shown.
+- Then trials following excluded operations are dropped, along with the replace-overlap trials.
 - Tests: `paired_contrast` (same vs. different, by `prev_condition`), and `difference_scores` → `rm_anova` + `pairwise_tests`.
 
 **Representational fidelity [B, Fig. 6].** Fidelity $F_i = S_{\{i\}}(p_W(e^\text{post}_i))$ is the post-test pattern scored against the pre-test template, at both the item and category weighting levels. Each item carries:
@@ -176,7 +178,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 **Workflow:** the core target sets `manipulation` and `post_test` (window means, + 5 s), in all four `template_rsa.rois`. The rest is in the Bretton notebook:
 
 - **Memory flag:** derived from the raw post-test `response` / `confidence` columns (`memory_flag`).
-- **Operation:** joined from the study phase by item (`join_item_attributes`).
+- **Operation:** joined from the study phase by item (`join_exemplar_columns`).
 - **Template check:** `paired_contrast` of target vs. related.
 - **Remembered vs. forgotten:** `paired_contrast` with a subject-bootstrap CI over 10,000 resamples.
 - **Mixed models:** `mixed_model`, `z ~ C(memory, Treatment('remembered'))` with `re_formula` `~C(memory, Treatment('remembered'))`.
@@ -195,7 +197,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 | Run-wise z-scoring | Princeton MVPA toolbox | `timeseries.standardize: zscore_sample` | ✅ |
 | VVS ROI | Harvard-Oxford regions at 20%, in native space | `rois.vvs.mask_pattern` (build it from the HO atlas), or `atlas_pattern` + labels | ≈ ROI file is user-provided |
 | Category masks | SPM GLM on localizer, mini-block boxcars + motion, cat > others, p < .05, k = 10 | `category_mask` with `block_merge_gap_seconds: 5`, `hrf_model: spm`, `drift_model: cosine`, AR(1) | ≈ nilearn instead of SPM; FD-censored volumes are also left out of the GLM |
-| Item weights | SPM LSA, item vs. 53 others, t-values | `item_contrast: all_others`, `levels: [item]` | ✅ |
+| Item weights | SPM LSA, item vs. 53 others, t-values | `exemplar_contrast: all_others`, `levels: [exemplar]` | ✅ |
 | Templates | z-scored, 3 presentation TRs + 10-TR shift, averaged over 5 runs, × weights | `templates.window` onset + 4.6 → offset + 4.6 | ✅ |
 | Localizer validation (Fig. 3b) | Correlations among the 5 repetitions × 6 exemplars per subcategory; same > related > others | `validation` (leave-one-event-out templates); RDM path's pattern-level RDM for the matrix view | ≈ cross-validated variant |
 | Target weighting; mean r → z | `ytarg .* xbeta`; mean r over set, then Fisher z | `weight_target_patterns: true`; `S_A` | ✅ |
@@ -214,11 +216,11 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 | Preprocessing | fMRIPrep 21.0.1, MNI152NLin2009cAsym, TR 1 s; fMRIPrep confounds "used to clean the data" (exact set not stated) | `bold_glob` in MNI; `confounds` motion (24) + WM/CSF + cosines; `timeseries.regress_confounds: true` | ≈ confound set assumed |
 | ROIs | VVS, PFC, parietal, hippocampus from each participant's parcellation (Desikan-Killiany) in MNI, summed and binarized | `rois.*` = `atlas_pattern` (aparcaseg) + `labels` | ≈ VVS label list needs lab confirmation |
 | Category mask + category weights | GLM on pre-test, scene vs. face t, p < .05, k = 10 | `category_mask.events` = all pre-test trials; `levels` includes `category` | ✅ |
-| Item weights | LSA, each of 90 items vs. the 89 others | `item_contrast: all_others`, concatenated GLM (items in one run each) | ✅ |
+| Item weights | LSA, each of 90 items vs. the 89 others | `exemplar_contrast: all_others`, concatenated GLM (items in one run each) | ✅ |
 | Templates | pre-test pattern, single exposure, the 90 manipulated scenes | `templates.events` = pre-test scenes whose `trial_type` matches `new_.*` (the item's status is in the event name), `window` + 5 s; old scenes and faces are nuisance regressors in the item GLM | ✅ (validation skipped: single exposures) |
 | Template check on manipulation phase | target > all other items | core `manipulation` → notebook §1 (target vs. related, i.e. other scenes) | ✅ |
 | Memory flag | remembered = "sure old" hit on the post-test; forgotten otherwise | notebook `memory_flag` from `response` / `confidence` | ✅ |
-| Operation per post-test item | from the manipulation phase | notebook `join_item_attributes` | ✅ |
+| Operation per post-test item | from the manipulation phase | notebook `join_exemplar_columns` | ✅ |
 | Fidelity, remembered vs. forgotten | per operation, paired t on subject means (n = 18 with both outcomes) | notebook §2 `paired_contrast` (subjects with both) | ✅ |
 | Mixed model | (1 + memory \| participant), per operation | notebook §3 `mixed_model` (statsmodels) | ✅ |
 | Bootstrap CIs | 10,000 bootstrap resamples of participants | notebook `paired_contrast` (`N_BOOTSTRAP = 10000`) | ≈ CI of paired difference, not of a pooled trial-level regression |
@@ -251,7 +253,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
   - remembered > forgotten
 
   The helpers have unit tests ([tests/test_posthoc_common.py](../tests/test_posthoc_common.py)).
-- **Haxby 2001** ([tutorial/config-haxby-template.example.json](../tutorial/config-haxby-template.example.json); categories stand in for items):
+- **Haxby 2001** ([tutorial/config-haxby-template.example.json](../tutorial/config-haxby-template.example.json); categories stand in for items, i.e. the hierarchy is just `["category"]`):
   - item-weighted templates give held-out target − others = 0.54 Fisher z (unweighted: 0.30), n = 6, both p < .001
   - the timecourse peaks about 5–20 s after block onset
   - 3–4 of the 8 category masks per subject fell below 10 voxels with an 8-way contrast and fell back to the whole ROI (a guard that is not part of the published method; see §4.5)
@@ -260,8 +262,8 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 ## 4. Assumptions and open questions for the lab
 
 1. **Events schema.** The configs and notebooks assume these columns:
-   - `stimulus`, `category`, `subcategory`
-   - `condition` (operation)
+   - `stimulus`, `category`, `subcategory` (`events.hierarchy`: category > subcategory > stimulus; each stimulus must always have the same category and subcategory)
+   - `operation`
    - `replace_category` ([K]: the category switched to on replace trials)
    - `response` and `confidence` on post-test rows ([B])
    - pre-test `trial_type` = `old_<item>` / `new_<item>` ([B]: the new scenes are the ones that will be manipulated, and the only template items)

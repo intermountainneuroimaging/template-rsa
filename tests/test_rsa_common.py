@@ -4,7 +4,8 @@ import pytest
 
 from utils.rsa_common import (
     build_model_rdms, compute_volume_range, default_config, evaluate_query_node, format_pattern,
-    item_overlaps, label_items, merge_with_defaults, validate_model_rdms, validate_query_node,
+    label_events, merge_with_defaults, resolve_rows, row_names, row_parents, validate_model_rdms,
+    validate_query_node,
 )
 
 
@@ -32,17 +33,6 @@ def test_query_validation_reports_errors(events):
     assert not validate_query_node({"column": "run", "match": "exact", "value": "1"}, set(events.columns))
 
 
-def test_label_items_first_match_wins_and_include(events):
-    cond = {"include": {"column": "run", "match": "exact", "value": "2"},
-            "items": {"animate": {"column": "trial_type", "match": "in", "values": ["face", "cat"]},
-                      "face": {"column": "trial_type", "match": "exact", "value": "face"}}}
-    out = label_items(events, cond)
-    assert len(out) == 3
-    assert out["item"].tolist()[:2] == ["animate", "animate"]
-    assert pd.isna(out["item"].iloc[2])
-    assert item_overlaps(out, cond) == {("animate", "face"): 1}
-
-
 def test_volume_range():
     assert compute_volume_range(4.0, 28.0, 2.5, 121) == (1, 11)
     assert compute_volume_range(300.0, 330.0, 2.5, 121) == (120, 121)
@@ -59,38 +49,94 @@ def test_merge_with_defaults_is_recursive():
     assert cfg["rdm"]["cv_descriptor"] == "run"
 
 
-def _cfg(model_rdms, attributes=None):
+def _hierarchy_events():
+    """category > subcategory > exemplar; a probe (nuisance), a rest row (baseline), and an
+    incorrect trial."""
+    return pd.DataFrame({
+        "trial_type":  ["stim"] * 6 + ["probe", "rest", "stim"],
+        "category":    ["tool", "animal", "animal", "animal", "tool", "animal", None, None, "tool"],
+        "subcategory": ["kitchen", "mammal", "bird", "mammal", "kitchen", "bird", None, None, "workshop"],
+        "exemplar":    ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03", None, None, "hammer01"],
+        "correct":     ["1"] * 8 + ["0"],
+        "event_index": range(1, 10),
+    })
+
+
+def _cfg(model_rdms=None, **events):
     cfg = default_config()
-    cfg["conditions"]["items"] = {k: {"column": "trial_type", "match": "exact", "value": k} for k in "abc"}
-    cfg["conditions"]["attributes"] = attributes or {}
-    cfg["model_rdms"] = model_rdms
+    cfg["events"].update({"hierarchy": ["category", "subcategory", "exemplar"], "baseline_types": ["rest"], **events})
+    cfg["model_rdms"] = model_rdms or {}
     return cfg
 
 
-def test_categorical_and_feature_models(tmp_path):
+def test_roles_come_from_the_events_table():
+    cfg = _cfg(item_filter={"column": "correct", "match": "exact", "value": "1"})
+    out = label_events(_hierarchy_events(), cfg)
+    assert len(out) == 8  # the rest row is baseline: dropped, left unmodeled
+    assert out["role"].tolist() == ["item"] * 6 + ["nuisance", "nuisance"]  # probe; failed item_filter
+
+
+def test_rows_are_ordered_by_the_hierarchy_and_carry_their_parents():
+    cfg = _cfg(item_filter={"column": "correct", "match": "exact", "value": "1"})
+    assert resolve_rows(cfg, _hierarchy_events()) == []
+    assert row_names(cfg) == ["robin03", "dog01", "whisk02"]  # animal/bird, animal/mammal, tool/kitchen
+    assert row_parents(cfg)["dog01"] == {"category": "animal", "subcategory": "mammal"}
+    cfg["pattern_estimation"]["level"] = "subcategory"
+    resolve_rows(cfg, _hierarchy_events())
+    assert row_names(cfg) == ["bird", "mammal", "kitchen"]
+    cfg["pattern_estimation"]["level"] = "item"  # item patterns are averaged to exemplars for the RDM
+    resolve_rows(cfg, _hierarchy_events())
+    assert row_names(cfg) == ["robin03", "dog01", "whisk02"]
+
+
+def test_hierarchy_errors():
+    ev = _hierarchy_events()
+    ev.loc[3, "category"] = "tool"  # one dog01 row puts subcategory mammal under tool as well as animal
+    errors = resolve_rows(_cfg(), ev)
+    assert any("mammal" in e and "nest" in e for e in errors)
+    with pytest.raises(SystemExit):
+        row_names(_cfg())
+    ev = _hierarchy_events()
+    ev.loc[0, "subcategory"] = None  # an item trial_type without a full hierarchy
+    assert any("lack a value" in e for e in resolve_rows(_cfg(item_types=["stim"]), ev))
+    ev = _hierarchy_events()
+    ev.loc[ev["exemplar"] == "dog01", "exemplar"] = "dog_01"
+    ev.loc[ev["exemplar"] == "robin03", "exemplar"] = "dog01"
+    assert any("regressor / file name" in e for e in resolve_rows(_cfg(), ev))
+
+
+def test_categorical_feature_and_file_models(tmp_path):
     np.savetxt(tmp_path / "m.csv", np.array([[0, 1, 2], [1, 0, 3], [2, 3, 0]]), delimiter=",")
     cfg = _cfg({
-        "cat": {"type": "categorical", "attribute": "g"},
-        "feat": {"type": "feature", "features": {"a": [0.0], "b": [1.0], "c": [3.0]}},
+        "category": {"type": "categorical", "level": "category"},
+        "crossed": {"type": "categorical", "groups": {"robin03": "x", "dog01": "y", "whisk02": "x"}},
+        "feat": {"type": "feature", "features": {"robin03": [0.0], "dog01": [1.0], "whisk02": [3.0]}},
         "file": {"type": "file", "path": str(tmp_path / "m.csv")},
-    }, {"a": {"g": "x"}, "b": {"g": "x"}, "c": {"g": "y"}})
+    }, item_types=["stim"], item_filter={"column": "correct", "match": "exact", "value": "1"})
+    resolve_rows(cfg, _hierarchy_events())
     assert validate_model_rdms(cfg) == []
     rdms = build_model_rdms(cfg)
     mats = rdms.get_matrices()
-    assert list(rdms.rdm_descriptors["model"]) == ["cat", "feat", "file"]
+    assert list(rdms.rdm_descriptors["model"]) == ["category", "crossed", "feat", "file"]
+    assert list(rdms.pattern_descriptors["exemplar"]) == ["robin03", "dog01", "whisk02"]
     np.testing.assert_allclose(mats[0], [[0, 0, 1], [0, 0, 1], [1, 1, 0]])
-    assert mats[1][0, 2] > mats[1][0, 1] > 0
-    assert mats[2][1, 2] == 3
+    np.testing.assert_allclose(mats[1], [[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+    assert mats[2][0, 2] > mats[2][0, 1] > 0
+    assert mats[3][1, 2] == 3
 
 
-def test_model_validation_catches_missing_attribute():
-    cfg = _cfg({"cat": {"type": "categorical", "attribute": "g"}}, {"a": {"g": "x"}})
-    assert any("lacks 'g'" in e for e in validate_model_rdms(cfg))
+def test_model_validation():
+    cfg = _cfg({"same": {"type": "categorical", "level": "exemplar"},
+                "partial": {"type": "categorical", "groups": {"dog01": "x"}},
+                "both": {"type": "categorical", "level": "category", "groups": {}}})
+    resolve_rows(cfg, _hierarchy_events())
+    errors = validate_model_rdms(cfg)
+    assert any("coarser" in e for e in errors) and any("lacks row" in e for e in errors) and \
+        any("either 'level'" in e for e in errors)
 
 
 def test_weighted_model_validation():
-    cfg = _cfg({"m1": {"type": "categorical", "attribute": "g"}, "m2": {"type": "categorical", "attribute": "g"}},
-               {i: {"g": i} for i in "abc"})
+    cfg = _cfg({"m1": {"type": "categorical", "level": "category"}, "m2": {"type": "categorical", "level": "subcategory"}})
     from utils.rsa_common import validate_weighted_models
     cfg["weighted_models"] = {"w": {"components": ["m1", "m2"]}}
     assert validate_weighted_models(cfg) == []
@@ -98,44 +144,3 @@ def test_weighted_model_validation():
     cfg["comparison"]["method"] = "tau-a"
     errs = validate_weighted_models(cfg)
     assert any("not in model_rdms" in e for e in errs) and any("only supports" in e for e in errs)
-
-
-def _hierarchy_events():
-    return pd.DataFrame({
-        "trial_type": ["stim"] * 6 + ["probe"],
-        "category":    ["tool", "animal", "animal", "animal", "tool", "animal", None],
-        "subcategory": ["kitchen", "mammal", "bird", "mammal", "kitchen", "bird", None],
-        "exemplar":    ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03", None],
-    })
-
-
-def test_item_column_generates_items_and_attributes():
-    from utils.rsa_common import build_model_rdms, expand_conditions, item_names, label_items
-    cfg = default_config()
-    cfg["conditions"].update(include={"column": "trial_type", "match": "exact", "value": "stim"},
-                             item_column="exemplar", attribute_columns=["category", "subcategory"])
-    cfg["model_rdms"] = {"category": {"type": "categorical", "attribute": "category"}}
-    assert expand_conditions(cfg, _hierarchy_events()) == []
-    # sorted by category, then subcategory, then exemplar; the probe (no exemplar) is not an item
-    assert item_names(cfg) == ["robin03", "dog01", "whisk02"]
-    assert cfg["conditions"]["attributes"]["dog01"] == {"category": "animal", "subcategory": "mammal"}
-    labeled = label_items(_hierarchy_events(), cfg["conditions"])
-    assert labeled["item"].tolist() == ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03"]
-    mat = build_model_rdms(cfg).get_matrices()[0]
-    assert mat[0, 1] == 0 and mat[0, 2] == 1
-
-
-def test_item_column_errors():
-    from utils.rsa_common import expand_conditions, regressor_name_collisions
-    ev = _hierarchy_events()
-    ev.loc[3, "category"] = "tool"  # dog01 listed under two categories
-    cfg = default_config()
-    cfg["conditions"].update(item_column="exemplar", attribute_columns=["category"])
-    errors = expand_conditions(cfg, ev)
-    assert any("dog01" in e and "disagree" in e for e in errors) and cfg["conditions"]["items"] == {}
-
-    cfg = default_config()
-    cfg["conditions"].update(item_column="exemplar", items={"x": {"column": "exemplar", "match": "exact", "value": "x"}})
-    assert "not both" in expand_conditions(cfg, ev)[0]
-
-    assert regressor_name_collisions(["dog_1", "dog1", "cat"]) == {"dog1": ["dog_1", "dog1"]}

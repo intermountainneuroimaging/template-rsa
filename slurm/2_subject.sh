@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=rsa_subject
-#SBATCH --time=08:00:00  # LSS fits one GLM per trial; condition_per_run needs far less
+#SBATCH --time=08:00:00  # level "item" with LSS fits one GLM per item; pooled levels need far less
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
 set -euo pipefail

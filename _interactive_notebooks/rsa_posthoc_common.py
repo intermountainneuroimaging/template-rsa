@@ -11,8 +11,8 @@ The notebooks start from that table; nothing here knows about any particular stu
   loading         load_config, load_scores (the group raw table), load_master (the event table),
                   load_validation
   table helpers   add_previous_trial_columns (trial N-1 columns, e.g. for N+1 analyses),
-                  join_item_attributes (copy a column from another phase by item, e.g. operation
-                  onto post-test items), event_table (one row per event)
+                  join_exemplar_columns (copy a column from another phase by exemplar, e.g. the
+                  operation onto post-test exemplars), event_table (one row per event)
   aggregation     subject_means (trials -> subject means), baseline_correct, subtract_reference,
                   summarize (mean / SEM / n over subjects)
   statistics      make_bins, bin_means, one_sample_by_bin, compare_groups_by_bin (rm ANOVA + pairwise),
@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from utils.rsa_common import evaluate_query_node, safe_name  # noqa: E402
 from utils.rsa_common import load_config as _load_config  # noqa: E402
 
-EVENT_KEY = ["subject", "run_id", "trial_index"]
+EVENT_KEY = ["subject", "run_id", "event_index"]
 
 # =====================================================
 # Settings
@@ -120,11 +120,12 @@ def add_previous_trial_columns(df: pd.DataFrame, columns, matches: dict = None) 
     return df.drop(columns=drop).merge(out, on=EVENT_KEY, how="left")
 
 
-def join_item_attributes(df: pd.DataFrame, master: pd.DataFrame, source_query, item_col: str, columns,
-                         keep_existing: bool = True) -> pd.DataFrame:
+def join_exemplar_columns(df: pd.DataFrame, master: pd.DataFrame, source_query, item_col: str, columns,
+                          keep_existing: bool = True) -> pd.DataFrame:
     """Copy `columns` from the events matching source_query (e.g. the manipulation phase) onto the
-    rows of df by subject and item. An item seen several times in the source takes its first
-    occurrence (by run, onset). With keep_existing, values df already has are not overwritten."""
+    rows of df by subject and exemplar (`item_col`: the exemplar column, e.g. "stimulus"). An
+    exemplar seen several times in the source takes its first occurrence (by run, onset). With
+    keep_existing, values df already has are not overwritten."""
     src = master[evaluate_query_node(source_query, master)] if source_query else master
     src = src.sort_values(["subject", "run_id", "onset"]).assign(**{item_col: lambda d: d[item_col].astype(str)})
     src = src.drop_duplicates(["subject", item_col]).set_index(["subject", item_col])
@@ -415,7 +416,7 @@ def save_outputs(out_dir: str, figures: dict, tables: dict, run_settings: dict, 
 # =====================================================
 
 def make_toy_scores(seed=0, n_subjects=12, n_trials=10, n_tr=12, effect=(0.0, 0.0, 0.05, 0.12)):
-    """Toy timecourse table: two conditions ("maintain", "suppress"), target similarity that drops for
+    """Toy timecourse table: two operations ("maintain", "suppress"), target similarity that drops for
     suppress by `effect` (one value per 3-TR bin) -- for the worked example at the end of a notebook."""
     rng = np.random.default_rng(seed)
     rows = []
@@ -425,6 +426,6 @@ def make_toy_scores(seed=0, n_subjects=12, n_trials=10, n_tr=12, effect=(0.0, 0.
             for trial in range(n_trials):
                 for k in range(n_tr):
                     drop = effect[min(k // 3, len(effect) - 1)] if cond == "suppress" else 0.0
-                    rows.append({"subject": f"{s + 1:02d}", "condition": cond, "trial_index": trial, "tr_offset": k,
+                    rows.append({"subject": f"{s + 1:02d}", "operation": cond, "event_index": trial, "tr_offset": k,
                                  "time_s": k * 1.0, "z": 0.2 + subj_offset - drop + rng.normal(0, 0.15)})
     return pd.DataFrame(rows)

@@ -4,8 +4,8 @@ Stage 3: subject-level RSA -- data RDMs per ROI (and optionally per searchlight
 sphere) and their similarity to every model RDM.
 
 For each entry in `rois`: mask the subject's pattern images, drop non-finite /
-constant voxels, build an rsatoolbox Dataset (obs descriptors: item, run), compute
-the data RDM with `rdm.method` (patterns sharing an item are averaged; crossnobis /
+constant voxels, build an rsatoolbox Dataset (obs descriptors: the RDM level, e.g. exemplar, and run),
+compute the data RDM with `rdm.method` (patterns sharing a row value are averaged; crossnobis /
 poisson_cv cross-validate over `rdm.cv_descriptor`; mahalanobis / crossnobis use a
 noise precision estimated from the patterns with `rdm.noise.method`), then compare
 it to each model RDM with `comparison.method`.
@@ -17,7 +17,7 @@ model-similarity map per model in the subject's native space.
 Outputs (under <output_dir>/sub-<subject>/rsa/):
   roi-<roi>/sub-<s>_roi-<roi>_rdm.{csv,hdf5,png}
   roi-<roi>/sub-<s>_roi-<roi>_pattern-rdm.{csv,png}   (rdm.pattern_rdm.enabled: every pattern,
-                                                       item x run or trial, not averaged)
+                                                       row x run or item, not averaged)
   sub-<s>_model-comparison.csv
   searchlight/sub-<s>_model-<model>_searchlight.nii.gz
 
@@ -37,28 +37,31 @@ from nilearn.maskers import NiftiMasker
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
     build_dataset, build_model_rdms, clean_measurements, compute_data_rdm, compute_pattern_rdm,
-    format_pattern, item_names, load_config, pattern_index_path, pattern_labels, pattern_rdm_method,
+    format_pattern, load_config, rdm_level, row_names, pattern_index_path, pattern_labels, pattern_rdm_method,
     rdm_to_frame, resolve_roi_mask, sort_pattern_index, subject_dir,
 )
 from utils.rsa_plots import plot_pattern_rdm, plot_rdm
 
 
-def load_pattern_index(output_dir: str, subject: str, items: list) -> pd.DataFrame:
+def load_pattern_index(output_dir: str, subject: str, rows: list, level: str) -> pd.DataFrame:
     path = pattern_index_path(output_dir, subject)
     if not os.path.exists(path):
         raise SystemExit(f"{path} not found -- run estimate_patterns.py for subject {subject} first")
-    index = pd.read_csv(path, dtype={"subject": str, "run": str, "run_id": str, "item": str})
-    index = sort_pattern_index(index[index["item"].isin(items)], items)
-    missing = [i for i in items if i not in set(index["item"])]
+    index = pd.read_csv(path, dtype={"subject": str, "run": str, "run_id": str, level: str})
+    if level not in index:
+        raise SystemExit(f"{path} has no {level!r} column -- re-run estimate_patterns.py (the config's "
+                         "pattern_estimation.level or events.hierarchy changed)")
+    index = sort_pattern_index(index[index[level].isin(rows)], rows, level)
+    missing = [i for i in rows if i not in set(index[level])]
     if missing:
-        print(f"  (!) sub-{subject}: no patterns for item(s) {missing}; they are dropped from this subject's RDMs")
+        print(f"  (!) sub-{subject}: no patterns for {level}(s) {missing}; they are dropped from this subject's RDMs")
     return index
 
 
 def roi_rsa(cfg, subject, roi_name, roi_cfg, index, model_rdms, out_dir):
     import rsatoolbox
 
-    items = item_names(cfg)
+    rows, level = row_names(cfg), rdm_level(cfg)
     masker = NiftiMasker(mask_img=resolve_roi_mask(roi_cfg, subject, index["pattern_file"].iloc[0])).fit()
     raw = masker.transform(index["pattern_file"].tolist())
     data, kept = clean_measurements(raw)
@@ -68,39 +71,39 @@ def roi_rsa(cfg, subject, roi_name, roi_cfg, index, model_rdms, out_dir):
     if data.shape[1] < 2:
         raise SystemExit(f"ROI {roi_name} has <2 usable voxels for subject {subject}")
 
-    dataset = build_dataset(data, index, {"subject": subject, "roi": roi_name})
-    rdm = compute_data_rdm(dataset, cfg["rdm"], items)
+    dataset = build_dataset(data, index, {"subject": subject, "roi": roi_name}, level)
+    rdm = compute_data_rdm(dataset, cfg["rdm"], rows, level)
     rdm.rdm_descriptors["subject"] = [subject]
     rdm.rdm_descriptors["roi"] = [roi_name]
 
     roi_dir = os.path.join(out_dir, f"roi-{roi_name}")
     os.makedirs(roi_dir, exist_ok=True)
     prefix = os.path.join(roi_dir, f"sub-{subject}_roi-{roi_name}_rdm")
-    frame = rdm_to_frame(rdm)
+    frame = rdm_to_frame(rdm, level)
     frame.to_csv(prefix + ".csv")
     rdm.save(prefix + ".hdf5", file_type="hdf5", overwrite=True)
     plot_rdm(frame, f"sub-{subject} {roi_name} ({cfg['rdm']['method']}, {data.shape[1]} vox)", prefix + ".png")
 
     if cfg["rdm"]["pattern_rdm"]["enabled"]:
-        labels = pattern_labels(index)
-        pattern_frame = pd.DataFrame(compute_pattern_rdm(dataset, cfg["rdm"]), index=labels, columns=labels)
+        labels = pattern_labels(index, level)
+        pattern_frame = pd.DataFrame(compute_pattern_rdm(dataset, cfg["rdm"], level), index=labels, columns=labels)
         pattern_prefix = os.path.join(roi_dir, f"sub-{subject}_roi-{roi_name}_pattern-rdm")
         pattern_frame.to_csv(pattern_prefix + ".csv")
         plot_pattern_rdm(pattern_frame, f"sub-{subject} {roi_name}: every pattern "
                          f"({pattern_rdm_method(cfg['rdm'])}, n={len(labels)})", pattern_prefix + ".png")
 
-    rows = []
+    out = []
     if model_rdms is not None:
-        present = list(rdm.pattern_descriptors["item"])
-        models = model_rdms.subset_pattern("item", present)
-        models.reorder([list(models.pattern_descriptors["item"]).index(i) for i in present])
+        present = list(rdm.pattern_descriptors[level])
+        models = model_rdms.subset_pattern(level, present)
+        models.reorder([list(models.pattern_descriptors[level]).index(i) for i in present])
         sims = rsatoolbox.rdm.compare(models, rdm, method=cfg["comparison"]["method"]).ravel()
         for model, sim in zip(models.rdm_descriptors["model"], sims):
-            rows.append({"subject": subject, "roi": roi_name, "model": model, "similarity": float(sim),
-                         "comparison_method": cfg["comparison"]["method"], "rdm_method": cfg["rdm"]["method"],
-                         "n_voxels": data.shape[1], "n_items": len(present)})
+            out.append({"subject": subject, "roi": roi_name, "model": model, "similarity": float(sim),
+                        "comparison_method": cfg["comparison"]["method"], "rdm_method": cfg["rdm"]["method"],
+                        "n_voxels": data.shape[1], "rdm_level": level, "n_rows": len(present)})
             print(f"    {model:<24s} {cfg['comparison']['method']} = {sim: .3f}")
-    return rows
+    return out
 
 
 def searchlight_rsa(cfg, subject, index, model_rdms, out_dir):
@@ -121,12 +124,13 @@ def searchlight_rsa(cfg, subject, index, model_rdms, out_dir):
     data_2d = np.nan_to_num(data.reshape(data.shape[0], -1))
 
     centers, neighbors = get_volume_searchlight(mask, radius=sl["radius_voxels"], threshold=sl["threshold"])
-    sl_rdms = get_searchlight_RDMs(data_2d, centers, neighbors, np.array(index["item"]), method=method)
+    level = rdm_level(cfg)
+    sl_rdms = get_searchlight_RDMs(data_2d, centers, neighbors, np.array(index[level]), method=method)
 
-    # get_searchlight_RDMs orders items alphabetically; align the models to match
-    sl_items = sorted(set(index["item"]))
-    models_rdms = model_rdms.subset_pattern("item", sl_items)
-    order = list(models_rdms.pattern_descriptors["item"])
+    # get_searchlight_RDMs orders rows alphabetically; align the models to match
+    sl_items = sorted(set(index[level]))
+    models_rdms = model_rdms.subset_pattern(level, sl_items)
+    order = list(models_rdms.pattern_descriptors[level])
     models_rdms.reorder([order.index(i) for i in sl_items])
     models = [ModelFixed(name, models_rdms.subset("model", name))
               for name in models_rdms.rdm_descriptors["model"]]
@@ -145,8 +149,7 @@ def searchlight_rsa(cfg, subject, index, model_rdms, out_dir):
 
 
 def rsa_subject(cfg: dict, subject: str, output_dir: str) -> pd.DataFrame:
-    items = item_names(cfg)
-    index = load_pattern_index(output_dir, subject, items)
+    index = load_pattern_index(output_dir, subject, row_names(cfg), rdm_level(cfg))
     model_rdms = build_model_rdms(cfg) if cfg["model_rdms"] else None
     out_dir = os.path.join(subject_dir(output_dir, subject), "rsa")
     os.makedirs(out_dir, exist_ok=True)

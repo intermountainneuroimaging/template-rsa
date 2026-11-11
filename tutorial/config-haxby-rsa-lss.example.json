@@ -9,103 +9,16 @@
     "events_glob": "sub-*/func/*_events.tsv",
     "output_file": "out/haxby/master_spreadsheet_haxby.csv"
   },
-  "conditions": {
-    "items": {
-      "face": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "face"
-      },
-      "cat": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "cat"
-      },
-      "house": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "house"
-      },
-      "chair": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "chair"
-      },
-      "shoe": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "shoe"
-      },
-      "bottle": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "bottle"
-      },
-      "scissors": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "scissors"
-      },
-      "scrambledpix": {
-        "column": "trial_type",
-        "match": "exact",
-        "value": "scrambledpix"
-      }
-    },
-    "attributes": {
-      "face": {
-        "animacy": "animate",
-        "superordinate": "animate",
-        "face_vs_other": "face",
-        "intact": "intact"
-      },
-      "cat": {
-        "animacy": "animate",
-        "superordinate": "animate",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "house": {
-        "animacy": "inanimate",
-        "superordinate": "place",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "chair": {
-        "animacy": "inanimate",
-        "superordinate": "object",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "shoe": {
-        "animacy": "inanimate",
-        "superordinate": "object",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "bottle": {
-        "animacy": "inanimate",
-        "superordinate": "object",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "scissors": {
-        "animacy": "inanimate",
-        "superordinate": "object",
-        "face_vs_other": "other",
-        "intact": "intact"
-      },
-      "scrambledpix": {
-        "animacy": "none",
-        "superordinate": "scrambled",
-        "face_vs_other": "other",
-        "intact": "scrambled"
-      }
-    }
+  "events": {
+    "hierarchy": [
+      "animacy",
+      "superordinate",
+      "category"
+    ]
   },
   "pattern_estimation": {
     "method": "glm",
-    "unit": "trial",
+    "level": "item",
     "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/brain_mask.nii.gz",
     "glm": {
       "output_type": "t",
@@ -114,8 +27,8 @@
       "high_pass": 0.008,
       "noise_model": "ar1",
       "smoothing_fwhm": null,
-      "trial_model": "lss",
-      "lss_other": "condition"
+      "item_model": "lss",
+      "lss_other": "by_label"
     }
   },
   "rois": {
@@ -147,19 +60,37 @@
   "model_rdms": {
     "animacy": {
       "type": "categorical",
-      "attribute": "animacy"
+      "level": "animacy"
     },
     "superordinate": {
       "type": "categorical",
-      "attribute": "superordinate"
+      "level": "superordinate"
     },
     "face_vs_other": {
       "type": "categorical",
-      "attribute": "face_vs_other"
+      "groups": {
+        "face": "face",
+        "cat": "other",
+        "house": "other",
+        "chair": "other",
+        "shoe": "other",
+        "bottle": "other",
+        "scissors": "other",
+        "scrambledpix": "other"
+      }
     },
     "intact_vs_scrambled": {
       "type": "categorical",
-      "attribute": "intact"
+      "groups": {
+        "face": "intact",
+        "cat": "intact",
+        "house": "intact",
+        "chair": "intact",
+        "shoe": "intact",
+        "bottle": "intact",
+        "scissors": "intact",
+        "scrambledpix": "scrambled"
+      }
     }
   },
   "weighted_models": {

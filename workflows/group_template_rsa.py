@@ -8,10 +8,10 @@ from the raw table written here.
 
   raw table      every subject's scores stacked: one row per subject x event [x volume] x weighting
                  level x comparison set, with every events.tsv column (the notebooks' input)
-  subject means  trials averaged within subject per level x comparison x group_by [x TR]
+  subject means  target events averaged within subject per level x comparison x group_by [x TR]
   summary        mean / SEM / n over subjects of the subject means
   sanity check   paired t-tests between the comparison sets (target vs related vs others, ...) per
-                 level x group_by [averaged over TRs], FDR across pairs: is item information there?
+                 level x group_by [averaged over TRs], FDR across pairs: is exemplar information there?
   validation     leave-one-event-out template validation, per subject
 
 Outputs (under <output_dir>/group/template_rsa/):
@@ -63,7 +63,7 @@ def describe(scores: pd.DataFrame, g: dict, timecourse: bool):
     scores["group"] = group_label(scores, list(g["group_by"] or []))
     by = [*KEY, "group"] + (["tr_offset"] if timecourse else [])
     subj = scores.groupby(["subject", *by], as_index=False).agg(
-        z=("z", "mean"), n_trials=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))
+        z=("z", "mean"), n_events=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))
     summary = subj.groupby(by, as_index=False).agg(
         mean=("z", "mean"), sem=("z", stats.sem), n=("z", "count"), **({"time_s": ("time_s", "first")} if timecourse else {}))
 

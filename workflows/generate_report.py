@@ -4,7 +4,7 @@ Stage 5: multi-page PDF report, built from the outputs of stages 2-4 (nothing is
 recomputed except MDS coordinates).
 
 Group report (default) -> <output_dir>/group/rsa_report.pdf
-  1. analysis summary (config settings) + pattern inventory (patterns per subject x item)
+  1. analysis summary (config settings) + pattern inventory (patterns per subject x RDM row)
   2. model RDMs
   per ROI:
   3. mean RDM, MDS, fixed-model fits with noise ceiling and per-subject points;
@@ -37,7 +37,7 @@ import pandas as pd  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import build_model_rdms, item_names, load_config, pattern_index_path, safe_name, subject_dir  # noqa: E402
+from utils.rsa_common import build_model_rdms, hierarchy, load_config, pattern_level, rdm_level, row_names, pattern_index_path, safe_name, subject_dir  # noqa: E402
 from utils.rsa_plots import draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_weights  # noqa: E402
 
 PAGE = (8.5, 11)
@@ -103,16 +103,21 @@ def fmt(v):
 
 def summary_lines(cfg, subjects):
     pe, rdm, grp = cfg["pattern_estimation"], cfg["rdm"], cfg["group"]
-    pattern = f"{pe['method']} / {pe['unit']}"
+    pattern = f"{pe['method']} / level {pattern_level(cfg)}"
     if pe["method"] == "glm":
         pattern += f" / {pe['glm']['output_type']}"
-        if pe["unit"] == "trial":
-            pattern += f" / {pe['glm']['trial_model']}"
+        if pattern_level(cfg) == "item":
+            pattern += f" / {pe['glm']['item_model']}"
+    rdm_lines = []
+    if "rdm" in (cfg["pipeline"].get("analyses") or ["rdm"]):
+        rows = row_names(cfg)
+        rdm_lines = [f"RDM rows:     {rdm_level(cfg)} (n={len(rows)}): {', '.join(rows[:40])}" + (" ..." if len(rows) > 40 else "")]
     lines = [
         f"config:       {cfg.get('_config_path', '(in-memory)')}",
         f"generated:    {datetime.datetime.now():%Y-%m-%d %H:%M}",
         f"subjects:     {', '.join(subjects)}  (n={len(subjects)})",
-        f"items:        {', '.join(item_names(cfg))}",
+        f"hierarchy:    {' > '.join(hierarchy(cfg))} > item",
+        *rdm_lines,
         f"patterns:     {pattern}",
         f"preprocess:   {preprocessing_summary(pe)}",
         f"ROIs:         {', '.join(cfg['rois'])}",
@@ -143,7 +148,8 @@ def preprocessing_summary(pe) -> str:
         detail = {k: conf[k] for k in ("motion", "wm_csf", "global_signal", "compcor", "n_compcor") if k in conf}
         parts = [f"fMRIPrep confounds {'+'.join(strategy)}" + (f" {detail}" if detail else "")]
         if "scrub" in strategy:
-            parts.append(f"scrub FD>{conf.get('fd_threshold', 0.5)} / stdDVARS>{conf.get('std_dvars_threshold', 1.5)}")
+            parts.append(f"scrub FD>{conf.get('fd_threshold', 0.5)} / stdDVARS>{conf.get('std_dvars_threshold', 1.5)}, "
+                         f"min segment {conf.get('min_segment_volumes', 5)} vol")
     else:
         parts = [f"confound columns from {os.path.basename(conf['file_pattern'])}"]
     cens = pe.get("censoring") or {}
@@ -168,12 +174,12 @@ def run_qc(output_dir, subjects):
     return pd.concat(frames, ignore_index=True) if frames else None
 
 
-def inventory(output_dir, subjects, items):
+def inventory(output_dir, subjects, items, level):
     rows = {}
     for s in subjects:
-        idx = read_csv(pattern_index_path(output_dir, s), dtype={"item": str})
-        if idx is not None:
-            rows[f"sub-{s}"] = idx["item"].value_counts().reindex(items).fillna(0).astype(int)
+        idx = read_csv(pattern_index_path(output_dir, s), dtype={level: str})
+        if idx is not None and level in idx:
+            rows[f"sub-{s}"] = idx[level].value_counts().reindex(items).fillna(0).astype(int)
     if not rows:
         return None
     return pd.DataFrame(rows).T.reset_index(names="subject")
@@ -183,7 +189,7 @@ def model_rdm_page(pdf, cfg):
     if not cfg["model_rdms"]:
         return
     rdms = build_model_rdms(cfg)
-    items = item_names(cfg)
+    items = row_names(cfg)
     n = rdms.n_rdm
     cols = min(n, 3)
     fig, axes = plt.subplots(int(np.ceil(n / cols)), cols, figsize=(PAGE[0], 2.8 * np.ceil(n / cols) + 0.6),
@@ -230,13 +236,13 @@ def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
     if mean is not None:
         fig, ax = plt.subplots(figsize=PAGE)
         draw_pattern_rdm(ax, mean, f"{roi}: every pattern, mean over subjects ({method}, "
-                                   f"{len(mean)} patterns matched by item and position)")
+                                   f"{len(mean)} patterns matched by row and position)")
         ax.set_box_aspect(1)
         fig.suptitle(f"ROI: {roi} -- pattern-level RDM", fontsize=13, weight="bold")
         fig.text(0.07, 0.04, textwrap.fill(
-            "Rows/columns are single patterns (each item x run, or each trial), grouped by item; nothing is "
-            "averaged within an item. Item structure shows as dark diagonal blocks; run effects or drift show "
-            "as stripes. The item-level RDM averages these blocks.", 110), fontsize=8)
+            f"Rows/columns are single patterns (each {rdm_level(cfg)} x run, or each item), grouped by "
+            f"{rdm_level(cfg)}; nothing is averaged. {rdm_level(cfg).capitalize()} structure shows as dark diagonal "
+            "blocks; run effects or drift show as stripes. The RDM averages these blocks.", 110), fontsize=8)
         pdf.savefig(fig)
         plt.close(fig)
 
@@ -347,15 +353,15 @@ def roi_subject_page(pdf, cfg, output_dir, roi, subject):
 
 
 def template_summary_lines(cfg) -> list:
-    from workflows.template_rsa import target_specs
+    from workflows.template_rsa import target_specs, template_levels
     tr = cfg["template_rsa"]
     fw = tr["feature_weighting"]
     cm = fw["category_mask"]
     lines = ["", "template RSA (docs/lab_methods.md):",
-             f"  items:        {tr['item_column']} (category {tr['category_column']}, subcategory {tr['subcategory_column']})",
+             f"  exemplars:    {hierarchy(cfg)[-1]} (category {template_levels(cfg)[0]}, subcategory {template_levels(cfg)[1]})",
              f"  ROIs:         {', '.join(tr['rois'] or list(cfg['rois']))}",
              f"  templates:    {json.dumps(tr['templates']['events'])}",
-             f"  weighting:    levels {fw['levels']}, item contrast {fw['item_contrast']}, category mask "
+             f"  weighting:    levels {fw['levels']}, exemplar contrast {fw['exemplar_contrast']}, category mask "
              + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off")]
     for name, spec in target_specs(cfg).items():
         lines.append(f"  target {name}: {spec['mode']}, group_by {spec['group']['group_by']}")
@@ -410,7 +416,6 @@ def template_pages(pdf, cfg, output_dir):
 
 
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
-    items = item_names(cfg)
     if subject:
         subjects = [subject]
         out = os.path.join(subject_dir(output_dir, subject), "rsa", f"sub-{subject}_rsa_report.pdf")
@@ -424,7 +429,8 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
     lines = summary_lines(cfg, subjects) + (template_summary_lines(cfg) if "template" in analyses else [])
     with PdfPages(out) as pdf:
         text_page(pdf, "RSA report" + (f": sub-{subject}" if subject else ""), lines)
-        table_page(pdf, "Data inventory", [("Patterns per item", inventory(output_dir, subjects, items)),
+        inv = inventory(output_dir, subjects, row_names(cfg), rdm_level(cfg)) if "rdm" in analyses else None
+        table_page(pdf, "Data inventory", [(f"Patterns per {rdm_level(cfg)}", inv),
                                            ("Run QC: confounds and censoring", run_qc(output_dir, subjects))],
                    max_rows=60)
         if "rdm" in analyses:

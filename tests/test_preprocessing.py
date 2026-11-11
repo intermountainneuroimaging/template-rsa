@@ -1,7 +1,7 @@
 """Confounds / censoring on a synthetic dataset laid out like fMRIPrep output.
 
 Each run carries (a) a strong artifact that follows a motion trace with a fixed spatial
-map equal to item a's pattern, time-locked to item c's blocks, and (b) a few high-motion spikes flagged by
+map equal to exemplar a's pattern, time-locked to exemplar c's blocks, and (b) a few high-motion spikes flagged by
 framewise displacement. Regressing the fMRIPrep motion confounds and censoring the
 flagged volumes should recover the true a/b-vs-c geometry."""
 
@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from utils.preprocessing import fmriprep_confounds_path, run_nuisance, validate_preprocessing
-from utils.rsa_common import default_config, merge_with_defaults
+from utils.rsa_common import default_config, merge_with_defaults, resolve_rows
 from utils.validate_rsa_config import validate
 from workflows.estimate_patterns import estimate_subject
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
@@ -39,15 +39,16 @@ def make_fmriprep_dataset(root, subjects=("1", "2"), n_runs=4, seed=1):
         for run in range(1, n_runs + 1):
             stem = f"sub-{sub}_task-syn_run-{run:02d}"
             order = rng.permutation(["a", "b", "c"])
-            events = pd.DataFrame({"onset": [4.0, 44.0, 84.0], "duration": 16.0, "trial_type": order})
+            events = pd.DataFrame({"onset": [4.0, 44.0, 84.0], "duration": 16.0, "trial_type": "stim",
+                                   "group": ["c" if o == "c" else "ab" for o in order], "stim": order})
             # motion trace: slow random walk, plus jumps at the spike volumes
             motion = np.cumsum(rng.standard_normal((N_VOLS, 6)) * 0.05, axis=0)
             data = 100 + rng.standard_normal((N_VOLS, n_vox))
             for _, ev in events.iterrows():
                 lo = int((ev["onset"] + 4.0) // TR)
-                data[lo:lo + 8] += 2.0 * proto[ev["trial_type"]]
+                data[lo:lo + 8] += 2.0 * proto[ev["stim"]]
                 # artifact time-locked to the c block, carried by the motion regressors
-                if ev["trial_type"] == "c":
+                if ev["stim"] == "c":
                     motion[lo:lo + 8, 0] += 1.0
             data += 10.0 * np.outer(motion[:, 0] - motion[:, 0].mean(), artifact_map)
             data[list(SPIKES)] += 25.0 * rng.standard_normal((len(SPIKES), n_vox))
@@ -74,25 +75,24 @@ def make_fmriprep_dataset(root, subjects=("1", "2"), n_runs=4, seed=1):
             events.to_csv(func / f"{stem}_events.tsv", sep="\t", index=False)
 
 
-def make_config(root, method="glm", unit="condition_per_run", confounds=True, censor_mode="censor"):
+def make_config(root, method="glm", level=None, confounds=True, censor_mode="censor"):
     deriv = root / "derivatives" / "fmriprep"
     user = {
         "event_extraction": {"bids_root": str(root), "derivatives_root": str(deriv),
                              "bold_glob": f"sub-{{subject}}/func/sub-{{subject}}_task-{{task}}_run-{{run}}_{SPACE}_desc-preproc_bold.nii.gz",
                              "events_glob": "sub-*/func/*_events.tsv"},
-        "conditions": {"items": {k: {"column": "trial_type", "match": "exact", "value": k} for k in "abc"},
-                       "attributes": {"a": {"g": "ab"}, "b": {"g": "ab"}, "c": {"g": "c"}}},
+        "events": {"hierarchy": ["group", "stim"]},
         "pattern_estimation": {
-            "method": method, "unit": unit,
+            "method": method, "level": level,
             "mask_pattern": str(deriv / "sub-{subject}" / "func" / f"*_{SPACE}_desc-brain_mask.nii.gz"),
             "confounds": {"source": "fmriprep", "strategy": ["motion", "scrub"], "motion": "basic",
-                          "scrub": 0, "fd_threshold": 0.5, "std_dvars_threshold": 3.0} if confounds else None,
+                          "min_segment_volumes": 0, "fd_threshold": 0.5, "std_dvars_threshold": 3.0} if confounds else None,
             "censoring": {"mode": censor_mode},
             "glm": {"noise_model": "ols"},
         },
         "rois": {"all": {"mask_pattern": str(deriv / "sub-{subject}" / "func" /
                                               f"sub-{{subject}}_task-syn_run-01_{SPACE}_desc-brain_mask.nii.gz")}},
-        "model_rdms": {"ab_vs_c": {"type": "categorical", "attribute": "g"}},
+        "model_rdms": {"ab_vs_c": {"type": "categorical", "level": "group"}},
         "comparison": {"method": "corr"},
         "pipeline": {"output_dir": str(root / "out")},
     }
@@ -122,21 +122,22 @@ def test_run_nuisance_censor_and_regress(tmp_path):
     assert len(spikes) == regressed.qc["n_flagged"] >= len(SPIKES) + 2
 
 
-@pytest.mark.parametrize("method,unit,censor_mode", [
-    ("glm", "condition_per_run", "censor"),
-    ("glm", "condition_per_run", "regress"),
-    ("glm", "trial", "censor"),
-    ("volume_average", "condition_per_run", "censor"),
+@pytest.mark.parametrize("method,level,censor_mode", [
+    ("glm", None, "censor"),
+    ("glm", None, "regress"),
+    ("glm", "item", "censor"),
+    ("volume_average", None, "censor"),
 ])
-def test_confounds_recover_geometry(tmp_path, method, unit, censor_mode):
+def test_confounds_recover_geometry(tmp_path, method, level, censor_mode):
     make_fmriprep_dataset(tmp_path)
-    clean = make_config(tmp_path, method, unit, confounds=True, censor_mode=censor_mode)
+    clean = make_config(tmp_path, method, level, confounds=True, censor_mode=censor_mode)
     df = build_master_spreadsheet(clean)
     errors, _ = validate(clean, df)
     assert errors == []
 
     fits = {}
-    for label, cfg in (("clean", clean), ("raw", make_config(tmp_path, method, unit, confounds=False))):
+    for label, cfg in (("clean", clean), ("raw", make_config(tmp_path, method, level, confounds=False))):
+        resolve_rows(cfg, df)
         cfg["pipeline"]["output_dir"] = str(tmp_path / f"out-{label}")
         sims = []
         for sub in ("1", "2"):

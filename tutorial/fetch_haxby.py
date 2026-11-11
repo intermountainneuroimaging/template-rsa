@@ -11,12 +11,18 @@ lay it out as a BIDS-style tree the RSA pipeline can read:
 
 The nilearn release is one 4-D series per subject (12 runs x 121 volumes, TR 2.5 s)
 with a per-volume label file. Each run is split into its own file, and each
-contiguous block of a category becomes one event (onset/duration in seconds).
+contiguous block of a category becomes one event (onset/duration in seconds). Each
+event also gets the stimulus hierarchy as columns, coarse -> fine:
+  animacy > superordinate > category     (e.g. animate > animate > face,
+                                          inanimate > object > chair, none > scrambled > scrambledpix)
+which the RSA configs use as events.hierarchy; the coarser levels are the categorical models.
 `vt` is the ventral-temporal mask used in Haxby et al. (2001); `face` / `house`
 are the category-selective VT sub-masks shipped with the data.
 
 Usage:
     python tutorial/fetch_haxby.py --subjects 1 2 3 4 5 6 --out data/haxby-bids --cache data/nilearn
+    python tutorial/fetch_haxby.py --out data/haxby-bids --update-events   # add the hierarchy columns
+                                                                           # to an existing download
 """
 
 import argparse
@@ -32,6 +38,28 @@ from nilearn.masking import compute_epi_mask
 
 TR = 2.5
 TASK = "objectviewing"
+# category -> (animacy, superordinate): each level nests in the one before it
+HIERARCHY = {"face": ("animate", "animate"), "cat": ("animate", "animate"),
+             "house": ("inanimate", "place"), "chair": ("inanimate", "object"), "shoe": ("inanimate", "object"),
+             "bottle": ("inanimate", "object"), "scissors": ("inanimate", "object"),
+             "scrambledpix": ("none", "scrambled")}
+
+
+def with_hierarchy(events: pd.DataFrame) -> pd.DataFrame:
+    """onset / duration / trial_type + the animacy > superordinate > category columns."""
+    ev = events[["onset", "duration", "trial_type"]].copy()
+    ev["animacy"] = ev["trial_type"].map(lambda c: HIERARCHY[c][0])
+    ev["superordinate"] = ev["trial_type"].map(lambda c: HIERARCHY[c][1])
+    ev["category"] = ev["trial_type"]
+    return ev
+
+
+def update_events(out: str):
+    import glob
+    paths = sorted(glob.glob(os.path.join(out, "sub-*", "func", "*_events.tsv")))
+    for path in paths:
+        with_hierarchy(pd.read_csv(path, sep="\t")).to_csv(path, sep="\t", index=False)
+    print(f"added hierarchy columns to {len(paths)} events.tsv file(s)")
 
 
 def label_blocks(labels: pd.DataFrame) -> pd.DataFrame:
@@ -69,8 +97,7 @@ def convert_subject(haxby, s_idx: int, subject: str, out: str):
         run_img.header.set_zooms(run_img.header.get_zooms()[:3] + (TR,))
         run_img.to_filename(os.path.join(deriv_func, f"{stem}_desc-preproc_bold.nii.gz"))
         ev = blocks[blocks["chunk"] == chunk]  # onsets are relative to the run's first volume
-        ev[["onset", "duration", "trial_type"]].to_csv(
-            os.path.join(func_dir, f"{stem}_events.tsv"), sep="\t", index=False)
+        with_hierarchy(ev).to_csv(os.path.join(func_dir, f"{stem}_events.tsv"), sep="\t", index=False)
 
     compute_epi_mask(mean_img(bold, copy_header=True)).to_filename(os.path.join(mask_dir, "brain_mask.nii.gz"))
     for name, src in (("vt", haxby.mask_vt), ("face", haxby.mask_face), ("house", haxby.mask_house)):
@@ -85,7 +112,12 @@ def main():
     parser.add_argument("--subjects", nargs="+", type=int, default=[1, 2, 3, 4, 5, 6])
     parser.add_argument("--out", default="data/haxby-bids")
     parser.add_argument("--cache", default="data/nilearn", help="where nilearn stores the raw download")
+    parser.add_argument("--update-events", action="store_true",
+                        help="only (re)write the events.tsv files of an existing --out tree with the hierarchy columns")
     args = parser.parse_args()
+    if args.update_events:
+        update_events(args.out)
+        return
 
     haxby = datasets.fetch_haxby(data_dir=args.cache, subjects=args.subjects)
     os.makedirs(args.out, exist_ok=True)

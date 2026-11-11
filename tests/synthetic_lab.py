@@ -1,16 +1,17 @@
 """Synthetic dataset shaped like the lab's designs (Kim et al. 2020 + Bretton et al. 2024), with the
 events.tsv schema the lab configs and post-hoc notebooks assume:
 
-  localizer   template phase: 12 items (2 categories x 2 subcategories x 3), once per run, 3 runs
-  study       WM phase, trial_type "stimulus" at trial onset, condition maintain / replace_category /
-              suppress; maintain keeps the item active 6 s after the 2 s stimulus, replace_category
-              brings an item of the other category (named in replace_category) to mind instead,
+  localizer   template phase: 12 exemplars (2 categories x 2 subcategories x 3), once per run, 3 runs
+  study       WM phase, trial_type "stimulus" at trial onset, operation maintain / replace_category /
+              suppress; maintain keeps the exemplar active 6 s after the 2 s stimulus, replace_category
+              brings an exemplar of the other category (named in replace_category) to mind instead,
               suppress does neither; 2 runs
-  postmemory  post-test: the 12 old items plus 4 new ones (no template); old items answered
+  postmemory  post-test: the 12 old exemplars plus 4 new ones (no template); old ones answered
               old/sure ("remembered") come back strongly, the rest weakly; response / confidence columns
 
-Item patterns = category pattern (each category in its own half of the ROI) + subcategory
-pattern + item-specific pattern. A label image (value 7 everywhere) serves as an atlas ROI."""
+Every stimulus row carries the hierarchy category > subcategory > stimulus (exemplar).
+Exemplar patterns = category pattern (each category in its own half of the ROI) + subcategory
+pattern + exemplar-specific pattern. A label image (value 7 everywhere) serves as an atlas ROI."""
 
 import json
 
@@ -59,7 +60,7 @@ def write_run(root, sub, task, run, data, events):
     events.to_csv(func / f"{stem}_events.tsv", sep="\t", index=False)
 
 
-def item_columns(order, meta):
+def hierarchy_columns(order, meta):
     return {"stimulus": order, "category": [meta[i][0] for i in order], "subcategory": [meta[i][1] for i in order]}
 
 
@@ -72,7 +73,7 @@ def make_dataset(root, subjects=("1", "2", "3", "4"), seed=0):
         for run in range(1, 4):
             order = list(rng.permutation(names))
             onsets = 6.0 + 10.0 * np.arange(len(order))
-            ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **item_columns(order, meta)})
+            ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **hierarchy_columns(order, meta)})
             write_run(root, sub, "localizer", run, synth_run([(o, 2.0, pats[i], 2.0) for o, i in zip(onsets, order)],
                                                              int(onsets[-1] + 20), rng), ev)
         for run in range(1, 3):
@@ -81,8 +82,8 @@ def make_dataset(root, subjects=("1", "2", "3", "4"), seed=0):
             conds = np.array(["maintain", "replace_category", "suppress"] * (len(order) // 3))[rng.permutation(len(order))]
             other = {"face": "scene", "scene": "face"}
             repl = [other[meta[i][0]] if c == "replace_category" else None for i, c in zip(order, conds)]
-            ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **item_columns(order, meta),
-                               "condition": conds, "replace_category": repl})
+            ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **hierarchy_columns(order, meta),
+                               "operation": conds, "replace_category": repl})
             signal = [(o, 2.0, pats[i], 2.0) for o, i in zip(onsets, order)]
             for o, i, c, rc in zip(onsets, order, conds, repl):
                 if c == "maintain":
@@ -98,7 +99,7 @@ def make_dataset(root, subjects=("1", "2", "3", "4"), seed=0):
         response = np.where(old, np.where(remembered, "old", rng.choice(["old", "new"], len(post))), "new")
         confidence = np.where(old & remembered, "sure", rng.choice(["sure", "unsure"], len(post)))
         strong = (response == "old") & (confidence == "sure") & np.array(old)
-        ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **item_columns(post, meta),
+        ev = pd.DataFrame({"onset": onsets, "duration": 2.0, "trial_type": "stimulus", **hierarchy_columns(post, meta),
                            "response": response, "confidence": confidence})
         signal = [(o, 2.0, pats[i], 2.0 if s else 0.5) for o, i, s in zip(onsets, post, strong)]
         write_run(root, sub, "postmemory", 1, synth_run(signal, int(onsets[-1] + 20), rng), ev)
@@ -124,14 +125,15 @@ def make_config(root, **template_overrides) -> dict:
                              "bold_glob": "sub-{subject}/func/sub-{subject}_task-{task}_run-{run}_desc-preproc_bold.nii.gz",
                              "events_glob": "sub-*/func/*_events.tsv",
                              "output_file": str(root / "out" / "master_spreadsheet.csv")},
+        "events": {"hierarchy": ["category", "subcategory", "stimulus"]},
         "pattern_estimation": {"glm": {"noise_model": "ols", "drift_model": "cosine", "high_pass": 0.01}},
         "rois": {"vvs": {"atlas_pattern": str(root / "derivatives" / "sub-{subject}" / "anat" / "sub-{subject}_dseg.nii.gz"),
                          "labels": [7]}},
         "template_rsa": {
-            "item_column": "stimulus", "category_column": "category", "subcategory_column": "subcategory",
+            "category_level": "category", "subcategory_level": "subcategory",
             "timeseries": {"high_pass": 0.01},
             "templates": {"events": q("task", "localizer"), "window": lag()},
-            "feature_weighting": {"levels": ["item", "category"],
+            "feature_weighting": {"levels": ["exemplar", "category"],
                                   "category_mask": {"p_threshold": 0.05, "cluster_extent": 5}},
             "targets": {
                 "study_timecourse": {
@@ -139,13 +141,13 @@ def make_config(root, **template_overrides) -> dict:
                     "window": {"start": {"reference": "onset", "offset_seconds": 0},
                                "end": {"reference": "onset", "offset_seconds": 16}},
                     "extra_sets": {"replacement": {"column": "replace_category", "level": "category"}},
-                    "group": {"group_by": ["condition"], "comparisons": ["target", "related", "others", "replacement"]}},
+                    "group": {"group_by": ["operation"], "comparisons": ["target", "related", "others", "replacement"]}},
                 "encoding_fidelity": {
                     "events": q("task", "study"), "mode": "window_mean", "window": lag(),
-                    "group": {"group_by": ["condition"]}},
+                    "group": {"group_by": ["operation"]}},
                 "manipulation": {
                     "events": q("task", "study"), "mode": "window_mean", "window": lag(),
-                    "group": {"group_by": ["condition"], "comparisons": ["target", "related"]}},
+                    "group": {"group_by": ["operation"], "comparisons": ["target", "related"]}},
                 "post_test": {
                     "events": q("task", "postmemory"), "mode": "window_mean", "window": lag(),
                     "group": {"comparisons": ["target", "related", "others"]}},

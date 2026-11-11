@@ -4,6 +4,8 @@ The methodological core of both projects, as code. Each block below is copied fr
 
 **fMRIPrep output → nuisance model → patterns or cleaned time series (betaestimation) → event table → RDM analysis or template RSA (rsaworkflow) → group table → post-hoc notebooks.**
 
+**Vocabulary.** An *event* is one events.tsv row. An *item* is one event of interest (one viewing of one image). An *exemplar* is all repeats of the same stimulus: the finest level of `events.hierarchy`. A *condition* is any coarser level (category, subcategory), pooling the exemplars nested in it. The papers behind Part D say "item" for what is called an exemplar here.
+
 Formal definitions of the lab's template method are in [lab_methods.md](lab_methods.md); this document shows where each piece lives in code and which choices it encodes. Points that a reviewer should know about are marked **▲ Note**.
 
 ---
@@ -18,7 +20,7 @@ Everything that is "noise" for a run is decided once, here, and then reused by e
 
 The confounds are chosen in the config, under `pattern_estimation.confounds`; `censoring` sits beside it. [`utils/preprocessing.py`](../utils/preprocessing.py) passes both dicts to `run_nuisance` unchanged. If `confounds` is omitted, no confound regressors are added. The `source` key picks between two ways of specifying them.
 
-**`"source": "fmriprep"` (the default): name confound groups, not columns.** Every other key goes straight to nilearn's `load_confounds`, which picks the matching columns from the run's `desc-confounds_timeseries.tsv`. From [`examples/config-kim2020-ncomms.example.json`](../examples/config-kim2020-ncomms.example.json):
+**`"source": "fmriprep"` (the default): name confound groups, not columns.** Every other key goes to nilearn's `load_confounds` (`min_segment_volumes` is passed as nilearn's `scrub` argument; see below), which picks the matching columns from the run's `desc-confounds_timeseries.tsv`. From [`examples/config-kim2020-ncomms.example.json`](../examples/config-kim2020-ncomms.example.json):
 
 ```json
 "confounds": {
@@ -27,7 +29,7 @@ The confounds are chosen in the config, under `pattern_estimation.confounds`; `c
   "motion": "basic",
   "fd_threshold": 0.9,
   "std_dvars_threshold": 1000,
-  "scrub": 0
+  "min_segment_volumes": 0
 },
 "censoring": {"drop_initial_volumes": 10, "mode": "censor"}
 ```
@@ -36,7 +38,33 @@ The confounds are chosen in the config, under `pattern_estimation.confounds`; `c
 - Each group has its own setting for how many columns it adds:
   - `motion` and `wm_csf` can be `basic`, `power2`, `derivatives` or `full`. For motion these give 6 to 24 columns.
   - `compcor` and `n_compcor` control the CompCor components (see below).
-- `scrub`, `fd_threshold` and `std_dvars_threshold` add no regressors. They decide which volumes are flagged, and `censoring.mode` then decides what happens to those volumes.
+- `scrub`, `fd_threshold`, `std_dvars_threshold` and `min_segment_volumes` add no regressors. They decide which volumes are flagged, and `censoring.mode` then decides what happens to those volumes.
+
+**Scrubbing: detection vs. what happens next.** The `confounds` and `censoring` sections split the work; neither overrides the other:
+
+| config | role | without it |
+|---|---|---|
+| `strategy: [..., "scrub"]` + `fd_threshold` / `std_dvars_threshold` | find motion outliers; `load_confounds` returns them as a sample mask (`keep` below) | no motion censoring at all |
+| `min_segment_volumes` | also flag short stretches of good volumes between outliers | nilearn's default of 5 applies |
+| `censoring.drop_initial_volumes` | add the first N volumes (dummy scans), intersected with the scrub mask | only fMRIPrep's own non-steady-state flags, if `non_steady_state` is in the strategy |
+| `censoring.mode` | remove the flagged volumes (`"censor"`) or give each a spike regressor (`"regress"`) | `"censor"` |
+
+**`min_segment_volumes`.** Scrubbing runs in two steps. First, every volume over `fd_threshold` or `std_dvars_threshold` is flagged. Then any run of good volumes shorter than `min_segment_volumes`, stranded between outliers or at a run edge, is flagged too. Example: FD flags volumes 20 and 24:
+
+```
+volume:                  18 19 20 21 22 23 24 25 26
+FD outlier:                     X           X
+min_segment_volumes: 5 → ok ok  X  X  X  X  X ok ok    21–23 is only 3 good volumes (< 5), so it is dropped too
+min_segment_volumes: 0 → ok ok  X ok ok ok  X ok ok    only the two outliers are dropped
+```
+
+The default of 5 comes from Power et al. (2014), written for resting-state connectivity. There, isolated volumes between motion spikes are likely contaminated, and fragments that short cannot be filtered or correlated reliably. The lab configs use `0`:
+
+- It matches the papers. Kim et al. (2020) censor volumes with FD > 0.9 mm and nothing else; a segment rule would quietly remove more data than the methods report.
+- A GLM does not need continuous segments. Each kept volume contributes through the design matrix, so three good volumes between two spikes still carry task signal.
+- Template RSA scores events TR by TR. Each extra volume removed is one less TR in an event's window, and a short window can empty entirely.
+
+nilearn calls this setting `scrub`, the same word as the strategy entry that switches detection on. betaestimation renames it `min_segment_volumes` and translates it back (`fmriprep_kwargs`). A config that still uses a `scrub` key is rejected with a message naming the new key. `min_segment_volumes` without `"scrub"` in the strategy has no effect and gives a warning.
 
 **CompCor: `compcor` vs. `n_compcor`.** Both settings take effect only when `"compcor"` is in `strategy`.
 
@@ -86,7 +114,7 @@ fMRIPrep computes CompCor after high-pass filtering, so `high_pass` must be in t
 
 ### The code
 
-[`betaestimation/betaestimation/nuisance.py:84`](../../betaestimation/betaestimation/nuisance.py#L84-L121) — `run_nuisance`
+[`betaestimation/betaestimation/nuisance.py:105`](../../betaestimation/betaestimation/nuisance.py#L105-L141) — `run_nuisance`
 
 ```python
     censoring = censoring or {}
@@ -94,8 +122,7 @@ fMRIPrep computes CompCor after high-pass filtering, so `high_pass` must be in t
     if confounds:
         if confounds.get("source", "fmriprep") == "fmriprep":
             from nilearn.interfaces.fmriprep import load_confounds
-            kwargs = {k: (tuple(v) if k == "strategy" else v) for k, v in confounds.items() if k != "source"}
-            conf, keep = load_confounds(boldfile, **kwargs)
+            conf, keep = load_confounds(boldfile, **fmriprep_kwargs(confounds))
         else:
             conf = load_file_confounds(confounds, entities)
 
@@ -127,6 +154,22 @@ fMRIPrep computes CompCor after high-pass filtering, so `high_pass` must be in t
             qc["mean_fd"] = round(float(fd["framewise_displacement"].mean()), 3)
             qc["max_fd"] = round(float(fd["framewise_displacement"].max()), 3)
     return RunNuisance(conf, keep, qc)
+```
+
+The fMRIPrep spec reaches nilearn through one translation step, which is where `min_segment_volumes` becomes nilearn's `scrub`:
+
+[`betaestimation/betaestimation/nuisance.py:88`](../../betaestimation/betaestimation/nuisance.py#L88-L96) — `fmriprep_kwargs`
+
+```python
+def fmriprep_kwargs(confounds: dict) -> dict:
+    """The confounds spec as nilearn load_confounds arguments: min_segment_volumes -> scrub."""
+    if "scrub" in confounds:
+        raise ValueError(f"confounds: the 'scrub' key is now {MIN_SEGMENT_KEY!r} (keep 'scrub' in the strategy list)")
+    kwargs = {k: (tuple(v) if k == "strategy" else v) for k, v in confounds.items()
+              if k not in ("source", MIN_SEGMENT_KEY)}
+    if MIN_SEGMENT_KEY in confounds:
+        kwargs["scrub"] = int(confounds[MIN_SEGMENT_KEY])
+    return kwargs
 ```
 
 - `load_confounds` reads fMRIPrep's `desc-confounds_timeseries.tsv` for the strategy in the config and, when the strategy includes `scrub` / `non_steady_state`, also returns the **sample mask** (indices of volumes to keep): FD / std-DVARS outliers and fMRIPrep's non-steady-state volumes.
@@ -237,48 +280,51 @@ def roi_mask(path: str, labels=None, reference_img=None):
 
 Atlas ROIs are the union of integer labels (e.g. the Desikan-Killiany ids in fMRIPrep's `aparcaseg`), resampled with nearest-neighbour interpolation onto the BOLD grid, so a 1 mm anatomical parcellation can be applied to 2.4 mm functional data.
 
-## A5. One pattern per condition, or per trial (LSA)
+## A5. One pattern per label (pooled), or per item (LSA)
 
-`estimate_run_patterns` takes an events table where `label` marks the events of interest (NaN = not of interest) and turns labels into regressor names:
+`estimate_run_patterns` takes an events table where `label` marks the items, i.e. the events of interest (NaN = not of interest), and turns labels into regressor names. A label is whatever the items are pooled by: an exemplar, or a condition such as a category:
 
-[`betaestimation/betaestimation/estimate.py:46`](../../betaestimation/betaestimation/estimate.py#L46-L51) — `_regressor`
+[`betaestimation/betaestimation/estimate.py:50`](../../betaestimation/betaestimation/estimate.py#L50-L55) — `_regressor`
 
 ```python
 def _regressor(row, unit: str) -> str:
     if pd.isna(row["label"]):
         return f"nuisance_{safe_name(row['trial_type'])}"
-    if unit == "trial":
+    if unit == "item":
         return f"lbl_{safe_name(row['label'])}_ev{safe_name(row['event_id'])}"
     return f"lbl_{safe_name(row['label'])}"
 ```
 
-[`betaestimation/betaestimation/estimate.py:77`](../../betaestimation/betaestimation/estimate.py#L77-L91) — `estimate_run_patterns`
+[`betaestimation/betaestimation/estimate.py:83`](../../betaestimation/betaestimation/estimate.py#L83-L100) — `estimate_run_patterns`
 
 ```python
     glm = dict(glm or {})
+    problems = check_glm_options(glm)
+    if problems:
+        raise ValueError("; ".join(problems))
     output_type = glm.get("output_type", "t")
     model_df = events if model_unlabeled_events else events.dropna(subset=["label"]).reset_index(drop=True)
-    if unit == "trial" and glm.get("trial_model", "lss") == "lss":
+    if unit == "item" and glm.get("item_model", "lss") == "lss":
         yield from _lss(boldfile, model_df, tr, n_frames, mask_img, nuisance, glm, output_type)
         return
 
     design_events = model_df.assign(trial_type=[_regressor(r, unit) for _, r in model_df.iterrows()])
     model = fit_first_level(boldfile, design_events, tr, mask_img, nuisance, glm)
     labeled = model_df.dropna(subset=["label"])
-    groups = labeled.groupby("event_id", sort=False) if unit == "trial" else labeled.groupby("label", sort=False)
+    groups = labeled.groupby("event_id", sort=False) if unit == "item" else labeled.groupby("label", sort=False)
     for _, grp in groups:
         first = grp.iloc[0]
         img = contrast_map(model, _regressor(first, unit), output_type)
-        yield PatternEstimate(first["label"], first["event_id"] if unit == "trial" else None, len(grp), img)
+        yield PatternEstimate(first["label"], first["event_id"] if unit == "item" else None, len(grp), img)
 ```
 
-- **Unlabeled events are nuisance regressors** (`model_unlabeled_events`, default on): e.g. probes or cues get their own regressor by `trial_type` so their response does not end up in the implicit baseline, which would bias every condition's beta.
-- `unit="condition"`: one regressor per label pooling all its events in the run; `unit="trial"` + `trial_model="lsa"`: one regressor per event in the same GLM (least-squares-all).
+- **Unlabeled events are nuisance regressors** (`model_unlabeled_events`, default on): e.g. probes or cues get their own regressor by `trial_type` so their response does not end up in the implicit baseline, which would bias every beta.
+- `unit="pooled"`: one regressor per label pooling all its items in the run; `unit="item"` + `item_model="lsa"`: one regressor per item in the same GLM (least-squares-all).
 - Each pattern is a unit contrast on its column, returned as a t, z or beta map.
 
 The fit itself is a plain nilearn first-level model with the run's confounds and sample mask:
 
-[`betaestimation/betaestimation/glm.py:60`](../../betaestimation/betaestimation/glm.py#L60-L67) — `fit_first_level`
+[`betaestimation/betaestimation/glm.py:81`](../../betaestimation/betaestimation/glm.py#L81-L88) — `fit_first_level`
 
 ```python
 def fit_first_level(boldfile, events: pd.DataFrame, tr: float, mask_img, nuisance=None, glm: dict = None):
@@ -291,16 +337,17 @@ def fit_first_level(boldfile, events: pd.DataFrame, tr: float, mask_img, nuisanc
     return model
 ```
 
-## A6. Single-trial estimates by least-squares-separate (LSS)
+## A6. Item estimates by least-squares-separate (LSS)
 
-[`betaestimation/betaestimation/glm.py:84`](../../betaestimation/betaestimation/glm.py#L84-L106) — `lss`
+[`betaestimation/betaestimation/glm.py:105`](../../betaestimation/betaestimation/glm.py#L105-L128) — `lss`
 
 ```python
 def lss(data: np.ndarray, keep: np.ndarray, times: np.ndarray, events: pd.DataFrame, targets,
-        confounds: pd.DataFrame = None, glm: dict = None, lss_other: str = "condition"):
+        confounds: pd.DataFrame = None, glm: dict = None, lss_other: str = "by_label"):
     """Least-squares-separate (Mumford et al., 2012): one GLM per target event, with that event
-    as the only regressor of interest. The other events are modeled by their trial_type
-    ("condition", Mumford's LSS-N) or as one regressor ("single", Mumford's original LSS).
+    as the only regressor of interest. The other events are modeled by their trial_type column
+    ("by_label": one regressor per label / nuisance type, Mumford's LSS-N) or all together as one
+    regressor ("single", Mumford's original LSS).
 
     data    kept volumes x voxels, already masked / smoothed / scaled (see timeseries.glm_ready)
     keep    indices of the kept volumes; designs are built on the full timeline (`times`) and
@@ -321,7 +368,7 @@ def lss(data: np.ndarray, keep: np.ndarray, times: np.ndarray, events: pd.DataFr
         yield k, compute_contrast(labels, results, (design.columns == "lss_target").astype(float), stat_type="t")
 ```
 
-[`betaestimation/betaestimation/estimate.py:94`](../../betaestimation/betaestimation/estimate.py#L94-L104) — `_lss`
+[`betaestimation/betaestimation/estimate.py:103`](../../betaestimation/betaestimation/estimate.py#L103-L113) — `_lss`
 
 ```python
 def _lss(boldfile, model_df, tr, n_frames, mask_img, nuisance, glm, output_type):
@@ -329,22 +376,22 @@ def _lss(boldfile, model_df, tr, n_frames, mask_img, nuisance, glm, output_type)
     keep = np.arange(n_frames) if nuisance is None else nuisance.kept(n_frames)
     data = glm_ready(raw, nuisance, glm.get("signal_scaling", 0))
     times = frame_times(raw.shape[0], tr, glm.get("slice_time_ref", 0.0))
-    events = model_df.assign(trial_type=[_regressor(r, "condition") for _, r in model_df.iterrows()])
+    events = model_df.assign(trial_type=[_regressor(r, "pooled") for _, r in model_df.iterrows()])
     targets = list(np.flatnonzero(model_df["label"].notna().values))
     confounds = None if nuisance is None else nuisance.confounds
-    for k, con in lss(data, keep, times, events, targets, confounds, glm, glm.get("lss_other", "condition")):
+    for k, con in lss(data, keep, times, events, targets, confounds, glm, glm.get("lss_other", "by_label")):
         row = model_df.iloc[k]
         yield PatternEstimate(row["label"], row["event_id"], 1, masker.inverse_transform(contrast_values(con, output_type)))
 ```
 
-- One GLM **per target trial**: the target is the only regressor of interest; the others are modeled by condition (`lss_other: "condition"`, Mumford's LSS-N) or lumped into one regressor (`"single"`, the original LSS).
-- The run is masked, smoothed and scaled **once**; each trial only builds a design matrix and runs `run_glm` on the already-masked data.
+- One GLM **per item**: the target item is the only regressor of interest; the other events are modeled by their label or nuisance type (`lss_other: "by_label"`, Mumford's LSS-N) or lumped into one regressor (`"single"`, the original LSS).
+- The run is masked, smoothed and scaled **once**; each item only builds a design matrix and runs `run_glm` on the already-masked data.
 - **Censoring is applied after building the design** on the full timeline (`design.values[keep]`), so the HRF convolution of every regressor sees the true event timing — the same order of operations as `FirstLevelModel`.
-- ▲ Note: when every condition occurs exactly once per run, LSS-N's design *is* the per-condition design (and the LSA design), and they give identical maps (verified on Haxby and in `tests/test_betaestimation.py`). LSS-N differs from LSA only when a condition repeats within a run — the case it exists for, since LSA's betas for closely spaced, collinear trials of the same condition get noisy. `lss_other: "single"` differs as soon as a run has three or more events.
+- ▲ Note: when every label occurs exactly once per run, LSS-N's design *is* the pooled design (and the LSA design), and they give identical maps (verified on Haxby and in `tests/test_betaestimation.py`). LSS-N differs from LSA only when a label repeats within a run — the case it exists for, since LSA's betas for closely spaced, collinear items of the same label get noisy. `lss_other: "single"` differs as soon as a run has three or more events.
 
 ## A7. Volume averaging (no GLM)
 
-[`betaestimation/betaestimation/estimate.py:109`](../../betaestimation/betaestimation/estimate.py#L109-L121) — `_volume_average`
+[`betaestimation/betaestimation/estimate.py:118`](../../betaestimation/betaestimation/estimate.py#L118-L130) — `_volume_average`
 
 ```python
     data = clean_run(raw, tr, nuisance, detrend=va["detrend"], standardize=va["standardize"],
@@ -362,13 +409,13 @@ def _lss(boldfile, model_df, tr, n_frames, mask_img, nuisance, glm, output_type)
         per_event.append((ev["label"], ev["event_id"], np.nanmean(window, axis=0)))
 ```
 
-The cleaned series (A3) is averaged over each event's volumes after shifting by `hemodynamic_lag` — mvpa-decoding's approach to "the pattern for an event". With `unit="condition"` the events of each label are then averaged within the run.
+The cleaned series (A3) is averaged over each event's volumes after shifting by `hemodynamic_lag` — mvpa-decoding's approach to "the pattern for an event". With `unit="pooled"` the items of each label are then averaged within the run.
 
 ## A8. One GLM across several runs (SPM-style multi-session)
 
-Template RSA needs item-vs-others contrasts where an item may appear in only one run (Bretton et al.: each scene is shown once in the pre-test). A per-run GLM cannot estimate that contrast, so the runs are stacked into one model:
+Template RSA needs exemplar-vs-others contrasts where an exemplar may appear in only one run (Bretton et al.: each scene is shown once in the pre-test). A per-run GLM cannot estimate that contrast, so the runs are stacked into one model:
 
-[`betaestimation/betaestimation/glm.py:109`](../../betaestimation/betaestimation/glm.py#L109-L128) — `fit_concatenated`
+[`betaestimation/betaestimation/glm.py:131`](../../betaestimation/betaestimation/glm.py#L131-L150) — `fit_concatenated`
 
 ```python
 def fit_concatenated(runs: list, shared_prefix: str, glm: dict = None):
@@ -393,12 +440,12 @@ def fit_concatenated(runs: list, shared_prefix: str, glm: dict = None):
     return labels, results, list(design.columns)
 ```
 
-- Columns whose name starts with `shared_prefix` (`item_…`, `cat_…`) are **shared across runs**; every other column — nuisance events, cosine drifts, the intercept, confounds — is renamed `run<k>_…` and therefore **run-specific** (block-diagonal), as SPM does for sessions.
-- `fillna(0)` makes a run's design zero for items it never shows.
+- Columns whose name starts with `shared_prefix` (`exm_…`, `cat_…`) are **shared across runs**; every other column — nuisance events, cosine drifts, the intercept, confounds — is renamed `run<k>_…` and therefore **run-specific** (block-diagonal), as SPM does for sessions.
+- `fillna(0)` makes a run's design zero for exemplars it never shows.
 - Censored rows are dropped per run before stacking.
 - ▲ Note: `run_glm` estimates the AR(1) noise model on the stacked series, so a few lag pairs straddle run boundaries; SPM estimates serial correlations per session. The effect on the t-maps is small (one boundary per run), and `noise_model: "ols"` avoids it entirely.
 
-[`betaestimation/betaestimation/glm.py:131`](../../betaestimation/betaestimation/glm.py#L131-L137) — `contrast`
+[`betaestimation/betaestimation/glm.py:153`](../../betaestimation/betaestimation/glm.py#L153-L159) — `contrast`
 
 ```python
 def contrast(labels, results, columns: list, weights: dict, stat: str = "t") -> np.ndarray:
@@ -410,7 +457,7 @@ def contrast(labels, results, columns: list, weights: dict, stat: str = "t") -> 
     return np.ravel(con.stat() if stat == "t" else con.z_score())
 ```
 
-[`betaestimation/betaestimation/glm.py:140`](../../betaestimation/betaestimation/glm.py#L140-L143) — `versus_others`
+[`betaestimation/betaestimation/glm.py:162`](../../betaestimation/betaestimation/glm.py#L162-L165) — `versus_others`
 
 ```python
 def versus_others(target: str, others) -> dict:
@@ -419,7 +466,7 @@ def versus_others(target: str, others) -> dict:
     return {target: 1.0, **{o: -1.0 / len(others) for o in others}}
 ```
 
-`versus_others` builds the "item vs. the mean of the other items" weights used for item-selective t-maps.
+`versus_others` builds the "exemplar vs. the mean of the other exemplars" weights used for exemplar-selective t-maps.
 
 ## A9. Cluster-extent filtering
 
@@ -446,7 +493,7 @@ Thresholded maps keep only 26-connected clusters of at least `min_size` voxels (
 
 ## B1. The event table
 
-[`rsaworkflow/workflows/generate_master_spreadsheet.py:78`](../workflows/generate_master_spreadsheet.py#L78-L99) — `process_events_file`
+[`rsaworkflow/workflows/generate_master_spreadsheet.py:80`](../workflows/generate_master_spreadsheet.py#L80-L101) — `process_events_file`
 
 ```python
     excluded = events["trial_type"].apply(is_excluded_trial_type)
@@ -464,7 +511,7 @@ Thresholded maps keep only 26-connected clusters of at least `min_size` voxels (
     events.insert(3, "run", str(int(entities["run"])) if entities["run"].isdigit() else entities["run"])
     events.insert(4, "run_label", entities["run"])
     events.insert(5, "run_id", "_".join(p for p in (session, entities["task"], entities["run"]) if p))
-    events.insert(6, "trial_index", np.arange(1, len(events) + 1))
+    events.insert(6, "event_index", np.arange(1, len(events) + 1))
     for k, v in extra_entities.items():
         events[k] = v
     events["tr"] = tr
@@ -473,58 +520,107 @@ Thresholded maps keep only 26-connected clusters of at least `min_size` voxels (
     events["eventfile"] = events_path
 ```
 
-One row per event, every events.tsv column kept. Fixation / block markers / post-RT rows are dropped **before** `trial_index` is assigned, so trial numbers count only real events. `run_id` (session_task_run) identifies runs across tasks; it is the cross-validation fold label later.
+One row per event, every events.tsv column kept. Fixation / block markers / post-RT rows are dropped **before** `event_index` is assigned, so event numbers count only real events. `run_id` (session_task_run) identifies runs across tasks; it is the cross-validation fold label later.
 
-## B2. Which events are items
+## B2. Each event's role, from the events table
 
-[`rsaworkflow/utils/rsa_common.py:405`](../utils/rsa_common.py#L405-L419) — `label_items`
+The events.tsv files carry the stimulus hierarchy as columns, coarse to fine, and the config only names them:
 
-```python
-def label_items(df: pd.DataFrame, conditions_cfg: dict) -> pd.DataFrame:
-    """Add an `item` column naming which RDM item (conditions.items key) each event
-    belongs to, or NaN if none. Rows outside conditions.include are dropped entirely
-    (they are neither items nor nuisance). An event matching several items is
-    assigned to the first, in config order -- validate_rsa_config.py flags these."""
-    df = df.copy()
-    include = conditions_cfg.get("include")
-    if include:
-        df = df[evaluate_query_node(include, df)].copy()
-    df["item"] = np.nan
-    df["item"] = df["item"].astype(object)
-    for name, query in conditions_cfg["items"].items():
-        hit = evaluate_query_node(query, df) & df["item"].isna()
-        df.loc[hit, "item"] = name
-    return df
+```
+onset  duration  trial_type  category  subcategory  exemplar
+10.0   2.0       stim        animal    mammal       dog01      <- item
+14.0   1.0       probe       n/a       n/a          n/a        <- nuisance
+16.0   8.0       rest        n/a       n/a          n/a        <- baseline
+22.0   2.0       stim        animal    mammal       dog01      <- item (a repeat of exemplar dog01)
 ```
 
-The `conditions.items` queries (the same and/or/not query language as mvpa-decoding) assign each event to at most one RDM item, first match wins; `include` removes events entirely (they become neither items nor nuisance). The validator warns about events that match several items.
-
-**Items from a column.** When the item is already a column of events.tsv (an exemplar, stimulus or condition name), set `conditions.item_column` instead of writing `items`. Every distinct value of that column, among the events `include` keeps, becomes an item. Events with no value (`n/a`, empty) are not items. `conditions.attribute_columns` reads each item's attributes, for the categorical model RDMs, from other columns:
-
 ```json
-"conditions": {
-  "include": {"column": "trial_type", "match": "exact", "value": "stim"},
-  "item_column": "exemplar",
-  "attribute_columns": ["category", "subcategory"]
+"events": {
+  "hierarchy": ["category", "subcategory", "exemplar"],
+  "item_types": ["stim"],
+  "baseline_types": ["rest"]
 },
+"pattern_estimation": {"level": "exemplar"},
 "model_rdms": {
-  "category":    {"type": "categorical", "attribute": "category"},
-  "subcategory": {"type": "categorical", "attribute": "subcategory"}
+  "category":    {"type": "categorical", "level": "category"},
+  "subcategory": {"type": "categorical", "level": "subcategory"}
 }
 ```
 
-**Item column vs. attribute columns: a worked example.** Take four exemplars with a single attribute, `category`:
+[`rsaworkflow/utils/rsa_common.py:470`](../utils/rsa_common.py#L470-L488) — `label_events`
+
+```python
+def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Each event's role, decided by the events table alone:
+      baseline  trial_type in events.baseline_types -> dropped (left unmodeled: the baseline)
+      item      trial_type in events.item_types (or any type, if item_types is unset), a value
+                at every hierarchy level, and passing events.item_filter
+      nuisance  everything else -> its own regressor per trial_type
+    Hierarchy columns are returned as strings, with n/a / empty as None."""
+    ev = cfg["events"]
+    levels = hierarchy(cfg)
+    df = df[~df["trial_type"].astype(str).isin(ev.get("baseline_types") or [])].copy()
+    for lvl in levels:
+        df[lvl] = _clean(df[lvl])
+    is_item = df[levels].notna().all(axis=1) if levels else pd.Series(False, index=df.index)
+    if ev.get("item_types"):
+        is_item &= df["trial_type"].astype(str).isin(ev["item_types"])
+    if ev.get("item_filter"):
+        is_item &= evaluate_query_node(ev["item_filter"], df)
+    df["role"] = np.where(is_item, "item", "nuisance")
+    return df
+```
+
+- **baseline:** `trial_type` in `baseline_types`. Dropped, so it stays in the implicit baseline every beta is measured against.
+- **item:** a value at every hierarchy level (plus a `trial_type` in `item_types` and passing `item_filter`, when those are set).
+- **nuisance:** everything else, e.g. probes, cues, or incorrect trials that fail `item_filter`. Each `trial_type` gets its own regressor (A5).
+
+`pattern_estimation.level` picks what one pattern is: `"item"` (one per event of interest) or a hierarchy level, whose items are pooled per run (`"exemplar"`: an exemplar's repeats; `"category"`: all its exemplars).
+
+[`rsaworkflow/utils/rsa_common.py:525`](../utils/rsa_common.py#L525-L535) — `check_hierarchy`
+
+```python
+    for coarse, fine in zip(levels, levels[1:]):
+        parents = items.groupby(fine)[coarse].unique()
+        bad = parents[parents.map(len) > 1]
+        for value, ps in list(bad.items())[:5]:
+            errors.append(f"events.hierarchy: {fine} {value!r} appears under several {coarse} values "
+                          f"({', '.join(sorted(ps))}); each level must nest inside the one above")
+        if len(bad) > 5:
+            errors.append(f"events.hierarchy: ... and {len(bad) - 5} more {fine} values under several {coarse} values")
+    for lvl in levels:
+        for safe, names in regressor_name_collisions(items[lvl].unique()).items():
+            errors.append(f"{lvl} values {', '.join(map(repr, names))} all become regressor / file name {safe!r} "
+```
+
+- **Nesting** is what makes the hierarchy linear: every value has exactly one parent at the level above (dog01 is always animal / mammal). The validator rejects a file where it doesn't hold, instead of silently picking one parent.
+- ▲ **Note — name collisions.** Regressors and pattern files are named by `safe_name(value)`, which keeps only letters and digits, so `dog_1` and `dog1` would be fit as one regressor. The validator rejects such values at every level, and betaestimation's `estimate_run_patterns` refuses colliding labels too.
+
+[`rsaworkflow/utils/rsa_common.py:552`](../utils/rsa_common.py#L552-L557) — `resolve_rows`
+
+```python
+        items = label_events(df, cfg)
+        items = items[items["role"] == "item"]
+        up = coarser_levels(cfg, level)
+        first = items.drop_duplicates(level).set_index(level)
+        parents = {str(v): {c: first.loc[v, c] for c in up} for v in first.index}
+        rows = sorted(parents, key=lambda v: ([parents[v][c] for c in up], v))
+```
+
+The RDM rows are the values of the RDM level (the pattern level, or the exemplars when patterns are items), ordered by their parent levels, so each category forms a block in the figures. The rows are resolved on the whole event table, so every subject gets the same row list and order. Each row's parents are what the categorical models read.
+
+**Hierarchy levels vs. the RDM: a worked example.** Take four exemplars under one coarser level, `category`:
 
 ```
-onset  trial_type  exemplar  category
-10     stim        dog01     animal
-14     stim        cat02     animal
-18     stim        whisk02   tool
-22     stim        hammer01  tool
+onset  trial_type  category  exemplar
+10     stim        animal    dog01
+14     stim        animal    cat02
+18     stim        tool      whisk02
+22     stim        tool      hammer01
 ...    (repeated across runs)
 ```
 
-*The item column gives the data.* `item_column: "exemplar"` makes one beta map per exemplar. The RDM step compares every pair of those patterns and produces the **data RDM**, which says how differently the region responded to each pair (illustrative numbers):
+*The pattern level gives the data.* `level: "exemplar"` makes one beta map per exemplar per run. The RDM step compares every pair of those patterns and produces the **data RDM**, which says how differently the region responded to each pair (illustrative numbers):
 
 |          | dog01 | cat02 | whisk02 | hammer01 |
 |---|---|---|---|---|
@@ -535,7 +631,7 @@ onset  trial_type  exemplar  category
 
 This is only a measurement. On its own it says nothing about categories.
 
-*The attribute columns give the hypotheses.* To ask whether the region represents animal vs. tool, you need a prediction of what the RDM would look like if it did. `attribute_columns: ["category"]` together with a `categorical` model RDM supplies that prediction: same category = 0 (similar), different category = 1 (dissimilar):
+*Coarser levels give the hypotheses.* To ask whether the region represents animal vs. tool, you need a prediction of what the RDM would look like if it did. A categorical model at `level: "category"` supplies it: same category = 0 (similar), different category = 1 (dissimilar):
 
 |          | dog01 | cat02 | whisk02 | hammer01 |
 |---|---|---|---|---|
@@ -546,105 +642,53 @@ This is only a measurement. On its own it says nothing about categories.
 
 The comparison step (C3) correlates the two RDMs. Here they agree: dog–cat is low (0.3) where the model says 0, and dog–whisk is high (0.9) where it says 1. So the region's patterns are organized by category.
 
-- **The item column** says *which patterns to estimate*: the rows of the data RDM.
-- **An attribute column** says *which of those patterns belong together*: one model RDM per attribute.
+- **The pattern level** says *which patterns to estimate*: the rows of the data RDM.
+- **A coarser level** says *which of those rows belong together*: one model RDM per level.
 
-The exemplar name alone carries no grouping. Nothing in `"dog01"` says it goes with `"cat02"` rather than `"whisk02"`, and the attribute column is where you supply that. Adding `subcategory` (mammal / bird / kitchen / workshop) gives a second, finer model, tested against the same data RDM. That lets you ask whether the region tracks only the coarse category or the subcategory too. Attributes never change which betas are estimated. To get one beta per category instead, make `category` the item column.
+The exemplar name alone carries no grouping. Nothing in `"dog01"` says it goes with `"cat02"` rather than `"whisk02"`; the category column is where that is written down. A subcategory level (mammal / bird / kitchen / workshop) gives a second, finer model tested against the same data RDM, so you can ask whether the region tracks only the coarse category or the subcategory too. Coarser levels never change which betas are estimated; to get one beta per category instead, set `level: "category"`.
 
-[`rsaworkflow/utils/rsa_common.py:425`](../utils/rsa_common.py#L425-L470) — `expand_conditions`
-
-```python
-def expand_conditions(cfg: dict, df: pd.DataFrame) -> list:
-    """With conditions.item_column set, every distinct value of that column (among the events
-    kept by conditions.include, across all subjects) becomes an item, and each item's
-    attributes are read from conditions.attribute_columns. Writes conditions.items /
-    .attributes in place and returns a list of problems (also kept in
-    conditions._expand_errors for the validator).
-
-    Item order -- the RDM's row order -- sorts by the attribute columns, then the item, so
-    items of one category sit together. An item whose events disagree on an attribute
-    (e.g. one exemplar listed under two categories) is an error. Hand-written attributes for
-    a generated item are kept and override the columns."""
-    cond = cfg["conditions"]
-    col, attr_cols = cond.get("item_column"), list(cond.get("attribute_columns") or [])
-    if not col:
-        return []
-    if cond.get("items") and not cond.get("_items_generated"):
-        errors = ["conditions: set either item_column (items read from the event table) or items "
-                  "(written by hand), not both"]
-        cond["_expand_errors"] = errors
-        return errors
-    missing = [c for c in [col, *attr_cols] if c not in df.columns]
-    errors = [f"conditions: column {c!r} is not in the event table" for c in missing]
-    if not errors:
-        sub = df[evaluate_query_node(cond["include"], df)] if cond.get("include") else df
-        sub = sub[~sub[col].isna()]
-        sub = sub.assign(**{c: sub[c].astype(str) for c in [col, *attr_cols]})
-        sub = sub[~sub[col].isin(MISSING_VALUES)]
-        if sub.empty:
-            errors.append(f"conditions.item_column={col!r}: no events with a value in that column")
-        attributes = {}
-        for item, grp in sub.groupby(col, sort=False):
-            attributes[item] = {}
-            for a in attr_cols:
-                values = sorted(set(grp[a]) - MISSING_VALUES)
-                if len(values) > 1:
-                    errors.append(f"item {item!r}: its events disagree on {a!r} ({', '.join(values)})")
-                attributes[item][a] = values[0] if values else None
-        order = sorted(attributes, key=lambda i: ([str(attributes[i][a]) for a in attr_cols], i))
-        manual = cond.setdefault("_manual_attributes", copy.deepcopy(cond.get("attributes") or {}))
-        cond["items"] = {i: {"column": col, "match": "exact", "value": i} for i in order}
-        cond["attributes"] = {i: {**attributes[i], **manual.get(i, {})} for i in order}
-        cond["_items_generated"] = True
-    cond["_expand_errors"] = errors
-    if errors:
-        cond["items"] = {}
-    return errors
-```
-
-- Items are ordered by the attribute columns, then by name, so each category forms a block in the RDM figures.
-- An exemplar whose events disagree on an attribute (listed under two categories) is an error, not a silent first-value pick.
-- The expansion runs on the whole event table, so every subject gets the same item list and RDM order.
-- `items` and `item_column` are mutually exclusive. Hand-written `attributes` can still add or override values for generated items.
-
-▲ **Note — name collisions.** Regressors and pattern files are named by `safe_name(item)`, which keeps only letters and digits, so `dog_1` and `dog1` would be fit as one regressor. The validator rejects such item sets, and betaestimation's `estimate_run_patterns` refuses colliding labels too.
+**Groupings that cross the hierarchy** (stimulus identity across task phases, a cue status) can't be levels, because they don't nest. They stay as their own events.tsv columns, for `item_filter`, template-RSA queries and post-hoc notebooks, or become an explicit model: `{"type": "categorical", "groups": {row: group}}`. A crossed design whose cells you want as RDM rows (phase × stimulus) gets a column naming the combination (`encoding_0`), nested under the phase.
 
 ## B3. Handing runs to betaestimation
 
-[`rsaworkflow/workflows/estimate_patterns.py:84`](../workflows/estimate_patterns.py#L84-L88) — `run_events`
+[`rsaworkflow/workflows/estimate_patterns.py:88`](../workflows/estimate_patterns.py#L88-L94) — `run_events`
 
 ```python
-def run_events(run_df: pd.DataFrame) -> pd.DataFrame:
-    """The run's events in betaestimation's form: label = RDM item (NaN = not of interest)."""
+def run_events(run_df: pd.DataFrame, level: str) -> pd.DataFrame:
+    """The run's events in betaestimation's form: label = the item's value at the RDM level
+    (NaN for nuisance events), event_id = event_index."""
+    label = run_df[level].where(run_df["role"] == "item")
     return pd.DataFrame({"onset": run_df["onset"].astype(float).values, "duration": run_df["duration"].astype(float).values,
-                         "trial_type": run_df["trial_type"].values, "label": run_df["item"].values,
-                         "event_id": run_df["trial_index"].astype(int).values})
+                         "trial_type": run_df["trial_type"].values, "label": label.values,
+                         "event_id": run_df["event_index"].astype(int).values})
 ```
 
-[`rsaworkflow/workflows/estimate_patterns.py:104`](../workflows/estimate_patterns.py#L104-L121) — `estimate_subject`
+[`rsaworkflow/workflows/estimate_patterns.py:112`](../workflows/estimate_patterns.py#L112-L131) — `estimate_subject`
 
 ```python
     for boldfile, run_df in sub_df.groupby("boldfile", sort=True):
-        if run_df["item"].notna().sum() == 0:
+        n_items = int((run_df["role"] == "item").sum())
+        if n_items == 0:
             continue
         first = run_df.iloc[0]
         nuisance = run_nuisance(pe, run_df)
         qc_rows.append(nuisance.qc)
         flagged = f", {nuisance.qc['n_flagged']} vol flagged ({nuisance.qc['censoring']})" if nuisance.qc["n_flagged"] else ""
-        print(f"  run {first['run_id']}: {run_df['item'].notna().sum()} item event(s) [{pe['method']}], "
+        print(f"  run {first['run_id']}: {n_items} item(s) [{pe['method']}, level {level}], "
               f"{nuisance.qc['n_confounds']} confound(s){flagged}")
         stem = os.path.basename(boldfile).split("_desc-")[0].split("_bold")[0]
+        parents = run_df[run_df["role"] == "item"].drop_duplicates(row_level).set_index(row_level)[columns[:-1]]
         patterns = estimate_run_patterns(
-            boldfile, run_events(run_df), float(first["tr"]), int(first["n_frames"]), mask_img, nuisance,
-            method=pe["method"], unit=UNITS[pe["unit"]], glm=pe["glm"], volume_average=pe["volume_average"],
-            model_unlabeled_events=pe["model_unlabeled_events"])
+            boldfile, run_events(run_df, row_level), float(first["tr"]), int(first["n_frames"]), mask_img, nuisance,
+            method=pe["method"], unit="item" if level == ITEM_LEVEL else "pooled", glm=pe["glm"],
+            volume_average=pe["volume_average"], model_unlabeled_events=pe["model_unlabeled_events"])
         for est in patterns:
-            item, n_events, img = est.label, est.n_events, est.img
-            trial = None if est.event_id is None else int(est.event_id)
-            trial_tag = f"_trial-{trial:04d}" if trial is not None else ""
+            value, n_events, img = est.label, est.n_events, est.img
+            event = None if est.event_id is None else int(est.event_id)
+            event_tag = f"_event-{event:04d}" if event is not None else ""
 ```
 
-The item becomes betaestimation's `label` and `trial_index` its `event_id`; everything methodological from here to the pattern images is Part A.
+Each item's value at the RDM level becomes betaestimation's `label` and its `event_index` the `event_id`; `level` decides `unit="pooled"` or `unit="item"`. Everything methodological from here to the pattern images is Part A. The pattern index records the hierarchy columns down to the RDM level for every pattern.
 
 ---
 
@@ -652,7 +696,7 @@ The item becomes betaestimation's `label` and `trial_index` its `event_id`; ever
 
 ## C1. Pattern matrix per ROI
 
-[`rsaworkflow/workflows/rsa_workflow.py:62`](../workflows/rsa_workflow.py#L62-L72) — `roi_rsa`
+[`rsaworkflow/workflows/rsa_workflow.py:65`](../workflows/rsa_workflow.py#L65-L75) — `roi_rsa`
 
 ```python
     masker = NiftiMasker(mask_img=resolve_roi_mask(roi_cfg, subject, index["pattern_file"].iloc[0])).fit()
@@ -664,11 +708,11 @@ The item becomes betaestimation's `label` and `trial_index` its `event_id`; ever
     if data.shape[1] < 2:
         raise SystemExit(f"ROI {roi_name} has <2 usable voxels for subject {subject}")
 
-    dataset = build_dataset(data, index, {"subject": subject, "roi": roi_name})
-    rdm = compute_data_rdm(dataset, cfg["rdm"], items)
+    dataset = build_dataset(data, index, {"subject": subject, "roi": roi_name}, level)
+    rdm = compute_data_rdm(dataset, cfg["rdm"], rows, level)
 ```
 
-[`rsaworkflow/utils/rsa_common.py:641`](../utils/rsa_common.py#L641-L647) — `clean_measurements`
+[`rsaworkflow/utils/rsa_common.py:739`](../utils/rsa_common.py#L739-L745) — `clean_measurements`
 
 ```python
 def clean_measurements(measurements: np.ndarray):
@@ -684,48 +728,48 @@ Voxels that are non-finite or constant across all patterns (outside the brain ma
 
 ## C2. Distances
 
-[`rsaworkflow/utils/rsa_common.py:703`](../utils/rsa_common.py#L703-L725) — `compute_data_rdm`
+[`rsaworkflow/utils/rsa_common.py:802`](../utils/rsa_common.py#L802-L824) — `compute_data_rdm`
 
 ```python
-def compute_data_rdm(dataset, rdm_cfg: dict, item_order: list):
-    """rdm_cfg -> rsatoolbox calc_rdm. Patterns sharing an item are averaged (or, for
-    cross-validated methods, contrasted across `cv_descriptor` folds). Output is
-    reordered to item_order (calc_rdm otherwise sorts items alphabetically)."""
+def compute_data_rdm(dataset, rdm_cfg: dict, row_order: list, level: str):
+    """rdm_cfg -> rsatoolbox calc_rdm. Patterns sharing a row value (e.g. an exemplar's runs, or
+    its items) are averaged (or, for cross-validated methods, contrasted across `cv_descriptor`
+    folds). Output is reordered to row_order (calc_rdm otherwise sorts alphabetically)."""
     import rsatoolbox
 
     method = rdm_cfg["method"]
-    kwargs = {"method": method, "descriptor": "item"}
+    kwargs = {"method": method, "descriptor": level}
     dataset = _remove_voxel_mean(dataset, rdm_cfg)
     if method in RDM_METHODS_NEEDING_NOISE:
         noise_method = (rdm_cfg.get("noise") or {}).get("method", "shrinkage_diag")
         kwargs["noise"] = rsatoolbox.data.noise.prec_from_measurements(
-            dataset, obs_desc="item", method=noise_method)
+            dataset, obs_desc=level, method=noise_method)
     if method in RDM_METHODS_NEEDING_CV:
         kwargs["cv_descriptor"] = rdm_cfg.get("cv_descriptor", "run")
     rdm = rsatoolbox.rdm.calc_rdm(dataset, **kwargs)
     # calc_rdm stores the voxel x voxel noise precision as a descriptor; it is huge and differs
     # in size across subjects, which breaks saving and rsatoolbox.rdm.concat at the group level
     rdm.descriptors.pop("noise", None)
-    present = [i for i in item_order if i in set(rdm.pattern_descriptors["item"])]
-    current = list(rdm.pattern_descriptors["item"])
+    present = [i for i in row_order if i in set(rdm.pattern_descriptors[level])]
+    current = list(rdm.pattern_descriptors[level])
     rdm.reorder([current.index(i) for i in present])
     return rdm
 ```
 
-- `descriptor="item"`: rsatoolbox averages each item's patterns (all runs) before computing correlation or Euclidean distances.
+- `descriptor=level` (e.g. `"exemplar"`): rsatoolbox averages each row's patterns (all runs, or all items) before computing correlation or Euclidean distances.
 - **Crossnobis** (`cv_descriptor="run"`): distances are computed between run-wise pattern differences from *different* runs, so noise that is independent across runs cancels in expectation — an unbiased distance whose expected value is 0 for identical patterns.
-- Mahalanobis / crossnobis whiten with a noise precision estimated from the patterns' residuals around their item means (`prec_from_measurements`, shrinkage towards the diagonal by default). ▲ Note: the precision is estimated from the same patterns the distances use (standard in rsatoolbox examples); with few runs, a residual-based estimate from the first-level GLMs would be the stricter alternative.
-- `calc_rdm` sorts items alphabetically; the RDM is reordered to the config's item order so it matches the model RDMs.
+- Mahalanobis / crossnobis whiten with a noise precision estimated from the patterns' residuals around their row means (`prec_from_measurements`, shrinkage towards the diagonal by default). ▲ Note: the precision is estimated from the same patterns the distances use (standard in rsatoolbox examples); with few runs, a residual-based estimate from the first-level GLMs would be the stricter alternative.
+- `calc_rdm` sorts rows alphabetically; the RDM is reordered to the hierarchy order (B2) so it matches the model RDMs.
 
 The pattern-level view (every pattern its own row) uses a non-cross-validated distance:
 
-[`rsaworkflow/utils/rsa_common.py:688`](../utils/rsa_common.py#L688-L700) — `compute_pattern_rdm`
+[`rsaworkflow/utils/rsa_common.py:787`](../utils/rsa_common.py#L787-L799) — `compute_pattern_rdm`
 
 ```python
-def compute_pattern_rdm(dataset, rdm_cfg: dict) -> np.ndarray:
-    """Pattern-level RDM: every pattern (each item x run, or each trial) is its own row, in
-    the dataset's row order -- nothing is averaged. A QC / visualization view of the data
-    behind the item RDM: item structure shows as blocks, run or drift effects as stripes."""
+def compute_pattern_rdm(dataset, rdm_cfg: dict, level: str) -> np.ndarray:
+    """Pattern-level RDM: every pattern (each row x run, or each item) is its own row, in the
+    dataset's row order -- nothing is averaged. A QC / visualization view of the data behind
+    the RDM: row structure shows as blocks, run or drift effects as stripes."""
     import rsatoolbox
 
     dataset = _remove_voxel_mean(dataset, rdm_cfg)
@@ -733,23 +777,23 @@ def compute_pattern_rdm(dataset, rdm_cfg: dict) -> np.ndarray:
     kwargs = {"method": method}
     if method in RDM_METHODS_NEEDING_NOISE:
         noise_method = (rdm_cfg.get("noise") or {}).get("method", "shrinkage_diag")
-        kwargs["noise"] = rsatoolbox.data.noise.prec_from_measurements(dataset, obs_desc="item", method=noise_method)
+        kwargs["noise"] = rsatoolbox.data.noise.prec_from_measurements(dataset, obs_desc=level, method=noise_method)
     return rsatoolbox.rdm.calc_rdm(dataset, **kwargs).get_matrices()[0]
 ```
 
 ## C3. Model RDMs and their comparison with the data
 
-[`rsaworkflow/utils/rsa_common.py:604`](../utils/rsa_common.py#L604-L617) — `build_model_rdms`
+[`rsaworkflow/utils/rsa_common.py:701`](../utils/rsa_common.py#L701-L714) — `build_model_rdms`
 
 ```python
     for name, spec in cfg["model_rdms"].items():
         mtype = spec["type"]
         if mtype == "categorical":
-            labels = [attributes[i][spec["attribute"]] for i in items]
+            labels = [parents[i][spec["level"]] if "level" in spec else spec["groups"][i] for i in items]
             mat = np.array([[0.0 if a == b else 1.0 for b in labels] for a in labels])
         elif mtype == "feature":
             feats = np.array([np.atleast_1d(spec["features"][i]) for i in items], dtype=float)
-            ds = rsatoolbox.data.Dataset(feats, obs_descriptors={"item": items})
+            ds = rsatoolbox.data.Dataset(feats, obs_descriptors={level: items})
             mat = rsatoolbox.rdm.calc_rdm(ds, method=spec.get("metric", "euclidean")).get_matrices()[0]
         else:
             mat = load_matrix_file(spec["path"]).astype(float)
@@ -758,20 +802,20 @@ def compute_pattern_rdm(dataset, rdm_cfg: dict) -> np.ndarray:
         vectors.append(mat)
 ```
 
-[`rsaworkflow/workflows/rsa_workflow.py:94`](../workflows/rsa_workflow.py#L94-L97) — `roi_rsa`
+[`rsaworkflow/workflows/rsa_workflow.py:97`](../workflows/rsa_workflow.py#L97-L100) — `roi_rsa`
 
 ```python
-        present = list(rdm.pattern_descriptors["item"])
-        models = model_rdms.subset_pattern("item", present)
-        models.reorder([list(models.pattern_descriptors["item"]).index(i) for i in present])
+        present = list(rdm.pattern_descriptors[level])
+        models = model_rdms.subset_pattern(level, present)
+        models.reorder([list(models.pattern_descriptors[level]).index(i) for i in present])
         sims = rsatoolbox.rdm.compare(models, rdm, method=cfg["comparison"]["method"]).ravel()
 ```
 
-Categorical models are 0 within and 1 between attribute values — they predict **tied ranks**, which is why the main Haxby config compares with Kendall's τ-a (Nili et al., 2014) rather than Spearman's ρ (the crossnobis config uses cosine similarity, appropriate for ratio-scale distances).
+Categorical models are 0 within and 1 between values of a coarser level (or of a `groups` mapping) — they predict **tied ranks**, which is why the main Haxby config compares with Kendall's τ-a (Nili et al., 2014) rather than Spearman's ρ (the crossnobis config uses cosine similarity, appropriate for ratio-scale distances).
 
 ## C4. Group inference
 
-[`rsaworkflow/workflows/group_rsa.py:91`](../workflows/group_rsa.py#L91-L105) — `noise_ceiling`
+[`rsaworkflow/workflows/group_rsa.py:94`](../workflows/group_rsa.py#L94-L108) — `noise_ceiling`
 
 ```python
 def noise_ceiling(data_rdms, method: str):
@@ -793,7 +837,7 @@ def noise_ceiling(data_rdms, method: str):
 
 Leave-one-subject-out noise ceiling: the **upper** bound correlates each subject with the mean RDM *including* that subject (over-fits), the **lower** bound with the mean of the *other* subjects (a true held-out prediction). A model reaching the lower bound explains as much as the between-subject consistency allows.
 
-[`rsaworkflow/workflows/group_rsa.py:125`](../workflows/group_rsa.py#L125-L136) — `random_effects_stats`
+[`rsaworkflow/workflows/group_rsa.py:128`](../workflows/group_rsa.py#L128-L139) — `random_effects_stats`
 
 ```python
     for model in sims.columns:
@@ -812,7 +856,7 @@ Leave-one-subject-out noise ceiling: the **upper** bound correlates each subject
 
 Subjects are the random effect: one similarity per subject × model, a one-sample test against 0 (one-sided by default), FDR across models within the ROI.
 
-[`rsaworkflow/workflows/group_rsa.py:201`](../workflows/group_rsa.py#L201-L208) — `crossval_stats`
+[`rsaworkflow/workflows/group_rsa.py:204`](../workflows/group_rsa.py#L204-L211) — `crossval_stats`
 
 ```python
     if cv_cfg["scheme"] == "k_fold":
@@ -833,7 +877,7 @@ Weighted models have free weights, so they are only ever scored on **held-out su
 
 ## D1. Two copies of each run
 
-[`rsaworkflow/workflows/template_rsa.py:106`](../workflows/template_rsa.py#L106-L115) — `load_run`
+[`rsaworkflow/workflows/template_rsa.py:122`](../workflows/template_rsa.py#L122-L131) — `load_run`
 
 ```python
 def load_run(cfg: dict, run_df: pd.DataFrame, masker: NiftiMasker) -> RunData:
@@ -852,7 +896,7 @@ Every run in the template phase, the target phases and the category-mask events 
 
 ## D2. Category masks
 
-[`rsaworkflow/workflows/template_rsa.py:155`](../workflows/template_rsa.py#L155-L181) — `feature_selection`
+[`rsaworkflow/workflows/template_rsa.py:172`](../workflows/template_rsa.py#L172-L198) — `feature_selection`
 
 ```python
     if need_category_glm and len(categories) > 1:
@@ -876,7 +920,7 @@ Every run in the template phase, the target phases and the category-mask events 
                 z = contrast_stat(labels, results, columns, weights, "z")
                 mask = cluster_filter(z > z_crit, masker, int(cm["cluster_extent"]))
                 if mask.sum() < int(cm["min_voxels"]):
-                    # not part of the published method: an empty mask would silently drop every item
+                    # not part of the published method: an empty mask would silently drop every exemplar
                     # of this category, so fall back to the whole ROI and flag it
                     print(f"    (!) category {c!r}: {int(mask.sum())} voxels survive p<{cm['p_threshold']}, "
                           f"k>={cm['cluster_extent']} (< min_voxels={cm['min_voxels']}); using the whole ROI")
@@ -888,38 +932,38 @@ Every run in the template phase, the target phases and the category-mask events 
 - For each category, category vs. the mean of the others → **t map** (kept as the category-level weights) and **z map**, thresholded one-sided at `p_threshold` and cluster-filtered (A9).
 - ▲ Note: if fewer than `min_voxels` survive, the whole ROI is used and the fallback is recorded — not part of the published method (see lab_methods.md §4.5).
 
-## D3. Item weights
+## D3. Exemplar weights (the papers' item weights)
 
-[`rsaworkflow/workflows/template_rsa.py:188`](../workflows/template_rsa.py#L188-L209) — `feature_selection`
+[`rsaworkflow/workflows/template_rsa.py:205`](../workflows/template_rsa.py#L205-L226) — `feature_selection`
 
 ```python
-    if "item" in fw["levels"]:
+    if "exemplar" in fw["levels"]:
         tmpl_events = select(sub_df, tr_cfg["templates"]["events"])
         events_by_run = {}
-        item_col = tr_cfg["item_column"]
+        ex_col = exemplar_column(cfg)
         for bold, run_df in sub_df[sub_df["boldfile"].isin(tmpl_events["boldfile"])].groupby("boldfile"):
             interest = run_df.index.isin(tmpl_events.index)
-            names = "item_" + run_df[item_col].astype(str).map(safe_name)
+            names = "exm_" + run_df[ex_col].astype(str).map(safe_name)
             events_by_run[bold] = glm_events(run_df, interest, names)
-        labels, results, columns = concat_glm(cfg, runs, events_by_run, "item_")
+        labels, results, columns = concat_glm(cfg, runs, events_by_run, "exm_")
         for _, row in items.iterrows():
             pool = items
-            if fw["item_contrast"] == "within_category":
+            if fw["exemplar_contrast"] == "within_category":
                 pool = items[items["category"] == row["category"]]
-            elif fw["item_contrast"] == "within_subcategory":
+            elif fw["exemplar_contrast"] == "within_subcategory":
                 pool = items[items["subcategory"] == row["subcategory"]]
-            others = [o for o in pool["item"] if o != row["item"] and f"item_{safe_name(o)}" in columns]
+            others = [o for o in pool["exemplar"] if o != row["exemplar"] and f"exm_{safe_name(o)}" in columns]
             if not others:
-                raise SystemExit(f"item contrast for {row['item']!r} has no comparison items "
-                                 f"(item_contrast={fw['item_contrast']!r})")
-            weights = {f"item_{safe_name(row['item'])}": 1.0,
-                       **{f"item_{safe_name(o)}": -1.0 / len(others) for o in others}}
-            item_t[row["item"]] = contrast_stat(labels, results, columns, weights, "t")
+                raise SystemExit(f"exemplar contrast for {row['exemplar']!r} has no comparison exemplars "
+                                 f"(exemplar_contrast={fw['exemplar_contrast']!r})")
+            weights = {f"exm_{safe_name(row['exemplar'])}": 1.0,
+                       **{f"exm_{safe_name(o)}": -1.0 / len(others) for o in others}}
+            exemplar_t[row["exemplar"]] = contrast_stat(labels, results, columns, weights, "t")
 ```
 
-Least-squares-all over the template runs: one shared regressor per template item, and each item's weights are the t-values of **item vs. the mean of the other items** (or only those of its category / subcategory). Template-phase events that are *not* template events — e.g. Bretton's `old_<item>` scenes — fall into `glm_events`' nuisance branch, each with its own regressor because their `trial_type` is unique:
+Least-squares-all over the template runs: one shared regressor per template exemplar (the finest `events.hierarchy` level), and each exemplar's weights are the t-values of **exemplar vs. the mean of the other exemplars** (or only those of its category / subcategory, the hierarchy levels named by `category_level` / `subcategory_level`). Template-phase events that are *not* template events — e.g. Bretton's `old_<exemplar>` scenes — fall into `glm_events`' nuisance branch, each with its own regressor because their `trial_type` is unique:
 
-[`rsaworkflow/workflows/template_rsa.py:130`](../workflows/template_rsa.py#L130-L136) — `glm_events`
+[`rsaworkflow/workflows/template_rsa.py:146`](../workflows/template_rsa.py#L146-L152) — `glm_events`
 
 ```python
 def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merge_gap=None) -> pd.DataFrame:
@@ -933,26 +977,26 @@ def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merg
 
 ## D4. Templates
 
-[`rsaworkflow/workflows/template_rsa.py:285`](../workflows/template_rsa.py#L285-L307) — `build_template_sets`
+[`rsaworkflow/workflows/template_rsa.py:303`](../workflows/template_rsa.py#L303-L325) — `build_template_sets`
 
 ```python
-    occurrences = {}  # item -> list of (event index, raw pattern)
+    occurrences = {}  # exemplar -> list of (event row label, raw pattern)
     for idx, ev in tmpl_events.iterrows():
         pat = event_pattern(runs[ev["boldfile"]], window, ev)
         if pat is not None:
-            occurrences.setdefault(str(ev[item_col]), []).append((idx, pat))
+            occurrences.setdefault(str(ev[ex_col]), []).append((idx, pat))
 
     sets = {}
-    cat_of = items.set_index("item")["category"]
+    cat_of = items.set_index("exemplar")["category"]
     for level in fw["levels"]:
         masks, weights, templates = {}, {}, {}
-        for item in items["item"]:
+        for item in items["exemplar"]:
             if item not in occurrences:
                 continue
             c = cat_of[item]
             m = category_masks[c]
-            if level == "item":
-                w = item_t[item]
+            if level == "exemplar":
+                w = exemplar_t[item]
             elif level == "category":
                 w = category_t.get(c, np.ones_like(m, dtype=float))
             else:
@@ -961,15 +1005,16 @@ def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merg
             templates[item] = np.mean([p for _, p in occurrences[item]], axis=0)[m] * w[m]
 ```
 
-A template is the item's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the item's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the item's t map, its category's t map, or ones.
+A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones.
 
 ## D5. Scoring a target pattern
 
-[`rsaworkflow/workflows/template_rsa.py:232`](../workflows/template_rsa.py#L232-L239) — `TemplateSet.score`
+[`rsaworkflow/workflows/template_rsa.py:249`](../workflows/template_rsa.py#L249-L257) — `TemplateSet.score`
 
 ```python
     def score(self, y: np.ndarray, item: str, template=None) -> float:
-        """Pearson r between item's (weighted, masked) template and y weighted by the same item's weights."""
+        """Pearson r between an exemplar's (weighted, masked) template and y weighted by the same
+        exemplar's weights."""
         m = self.masks[item]
         t = self.templates[item] if template is None else template
         x = y[m] * self.weights[item][m] if self.weight_target else y[m]
@@ -978,12 +1023,12 @@ A template is the item's z-scored pattern — averaged over the volumes of `temp
         return pearson(t, x)
 ```
 
-[`rsaworkflow/workflows/template_rsa.py:249`](../workflows/template_rsa.py#L249-L261) — `score_matrix`
+[`rsaworkflow/workflows/template_rsa.py:267`](../workflows/template_rsa.py#L267-L279) — `score_matrix`
 
 ```python
 def score_matrix(ts: TemplateSet, data: np.ndarray, items: list) -> np.ndarray:
-    """Pearson r of every row of `data` (volumes x voxels) with each item's template:
-    -> volumes x items (NaN for censored volumes). Vectorized over volumes."""
+    """Pearson r of every row of `data` (volumes x voxels) with each exemplar's template:
+    -> volumes x exemplars (NaN for censored volumes). Vectorized over volumes."""
     out = np.full((data.shape[0], len(items)), np.nan)
     for j, item in enumerate(items):
         m = ts.masks[item]
@@ -996,28 +1041,28 @@ def score_matrix(ts: TemplateSet, data: np.ndarray, items: list) -> np.ndarray:
     return out
 ```
 
-- The target pattern is weighted by the **same item's** weights before correlating (from the authors' code: `ytarg_pat .* xbeta`), so template and target live in the same feature space.
+- The target pattern is weighted by the **same exemplar's** weights before correlating (from the authors' code: `ytarg_pat .* xbeta`), so template and target live in the same feature space.
 - `score_matrix` computes the Pearson r of **every volume of a run** with every template in one vectorized pass; trial timecourses are then just indexing into it. Censored volumes (NaN rows) yield NaN scores.
 
-[`rsaworkflow/workflows/template_rsa.py:268`](../workflows/template_rsa.py#L268-L276) — `comparison_sets`
+[`rsaworkflow/workflows/template_rsa.py:286`](../workflows/template_rsa.py#L286-L294) — `comparison_sets`
 
 ```python
 def comparison_sets(ts: TemplateSet, item: str, related_level: str) -> dict:
-    row = ts.items.set_index("item").loc[item]
+    row = ts.items.set_index("exemplar").loc[item]
     same = ts.items[ts.items["category"] == row["category"]]
     if related_level == "subcategory" and "subcategory" in ts.items and pd.notna(row.get("subcategory")):
-        related = same[(same["subcategory"] == row["subcategory"]) & (same["item"] != item)]["item"].tolist()
+        related = same[(same["subcategory"] == row["subcategory"]) & (same["exemplar"] != item)]["exemplar"].tolist()
     else:
-        related = same[same["item"] != item]["item"].tolist()
-    others = ts.items[ts.items["category"] != row["category"]]["item"].tolist()
+        related = same[same["exemplar"] != item]["exemplar"].tolist()
+    others = ts.items[ts.items["category"] != row["category"]]["exemplar"].tolist()
     return {"target": [item], "related": related, "others": others}
 ```
 
-[`rsaworkflow/workflows/template_rsa.py:313`](../workflows/template_rsa.py#L313-L327) — `extra_sets`
+[`rsaworkflow/workflows/template_rsa.py:331`](../workflows/template_rsa.py#L331-L345) — `extra_sets`
 
 ```python
 def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
-    """extra_sets {name: {"column", "level"}}: the templates whose item / category / subcategory equals
+    """extra_sets {name: {"column", "level"}}: the templates whose exemplar / category / subcategory equals
     this event's value in `column` -- e.g. on replace trials, every template of the replacement
     category ({"column": "replace_category", "level": "category"}). Events with no value (or no
     matching template) get no score for that set."""
@@ -1026,29 +1071,29 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
         value = ev.get(xs["column"])
         if value is None or pd.isna(value):
             continue
-        level = xs.get("level", "item")
-        members = ts.items[ts.items[level].astype(str) == str(value)]["item"].tolist()
+        level = xs["level"]
+        members = ts.items[ts.items[level].astype(str) == str(value)]["exemplar"].tolist()
         if members:
             sets[name] = members
     return sets
 ```
 
-[`rsaworkflow/workflows/template_rsa.py:357`](../workflows/template_rsa.py#L357-L361) — `score_targets`
+[`rsaworkflow/workflows/template_rsa.py:375`](../workflows/template_rsa.py#L375-L379) — `score_targets`
 
 ```python
                         for comp, members in sets.items():
                             r = np.nanmean(S[vol, [col_of[m] for m in members]]) if members else np.nan
                             rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
                                          "tr_offset": k, "time_s": k * rd.tr, "volume": int(vol),
-                                         "n_items": len(members), "r": r, "z": fisher_z(r)})
+                                         "n_exemplars": len(members), "r": r, "z": fisher_z(r)})
 ```
 
-- A set's score is the **mean Pearson r over its items, then Fisher z** (the authors' order of operations), for `target` (the trial's own item), `related` (other items of its category), `others` (items of other categories) and any `extra_sets` — e.g. every template of the category named in `replace_category`.
-- Every events.tsv column is carried into each row (`meta`), which is what lets the post-hoc notebooks define memory outcomes, previous trials or conditions later without touching the core.
+- A set's score is the **mean Pearson r over its exemplars, then Fisher z** (the authors' order of operations), for `target` (the trial's own exemplar), `related` (other exemplars of its category), `others` (exemplars of other categories) and any `extra_sets` — e.g. every template of the category named in `replace_category`.
+- Every events.tsv column is carried into each row (`meta`), which is what lets the post-hoc notebooks define memory outcomes, previous trials or operations later without touching the core.
 
 ## D6. Template validation
 
-[`rsaworkflow/workflows/template_rsa.py:385`](../workflows/template_rsa.py#L385-L390) — `validate_templates`
+[`rsaworkflow/workflows/template_rsa.py:402`](../workflows/template_rsa.py#L402-L407) — `validate_templates`
 
 ```python
             for k, (idx, pat) in enumerate(occ):
@@ -1059,7 +1104,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
                     r = np.nanmean(rs) if rs else np.nan
 ```
 
-Each template event is scored against its item's template rebuilt **without that event**. ▲ Note: the masks and weights (D2–D3) were still estimated from all template events, including the left-out one — the same mild circularity as the published analysis; a fully held-out check would re-fit the GLMs per fold.
+Each template event is scored against its exemplar's template rebuilt **without that event**. ▲ Note: the masks and weights (D2–D3) were still estimated from all template events, including the left-out one — the same mild circularity as the published analysis; a fully held-out check would re-fit the GLMs per fold.
 
 ## D7. The group raw table
 
@@ -1081,7 +1126,7 @@ Each template event is scored against its item's template rebuilt **without that
     scores["group"] = group_label(scores, list(g["group_by"] or []))
     by = [*KEY, "group"] + (["tr_offset"] if timecourse else [])
     subj = scores.groupby(["subject", *by], as_index=False).agg(
-        z=("z", "mean"), n_trials=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))
+        z=("z", "mean"), n_events=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))
     summary = subj.groupby(by, as_index=False).agg(
         mean=("z", "mean"), sem=("z", stats.sem), n=("z", "count"), **({"time_s": ("time_s", "first")} if timecourse else {}))
 ```
@@ -1092,9 +1137,9 @@ The core stops here: every subject stacked, plus descriptive subject means. All 
 
 # Part E — post-hoc helpers (`_interactive_notebooks/rsa_posthoc_common.py`)
 
-## E1. Subjects as the random effect, baselines and reference conditions
+## E1. Subjects as the random effect, baselines and reference operations
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:143`](../_interactive_notebooks/rsa_posthoc_common.py#L143-L146) — `subject_means`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:144`](../_interactive_notebooks/rsa_posthoc_common.py#L144-L147) — `subject_means`
 
 ```python
 def subject_means(df: pd.DataFrame, by, value: str = "z") -> pd.DataFrame:
@@ -1103,7 +1148,7 @@ def subject_means(df: pd.DataFrame, by, value: str = "z") -> pd.DataFrame:
         **{value: (value, "mean"), "n_trials": (value, "size")})
 ```
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:151`](../_interactive_notebooks/rsa_posthoc_common.py#L151-L156) — `baseline_correct`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:152`](../_interactive_notebooks/rsa_posthoc_common.py#L152-L157) — `baseline_correct`
 
 ```python
     a, b = baseline_trs
@@ -1114,7 +1159,7 @@ def subject_means(df: pd.DataFrame, by, value: str = "z") -> pd.DataFrame:
     return out.drop(columns="_base")
 ```
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:162`](../_interactive_notebooks/rsa_posthoc_common.py#L162-L166) — `subtract_reference`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:163`](../_interactive_notebooks/rsa_posthoc_common.py#L163-L167) — `subtract_reference`
 
 ```python
     keys = ["subject", *by]
@@ -1124,7 +1169,7 @@ def subject_means(df: pd.DataFrame, by, value: str = "z") -> pd.DataFrame:
     return out.drop(columns="_ref").dropna(subset=[value])
 ```
 
-Trials are averaged within subject before any test; baselines are subtracted per subject × condition curve; "operation minus maintain" is matched on subject and TR.
+Trials are averaged within subject before any test; baselines are subtracted per subject × operation curve; "operation minus maintain" is matched on subject and TR.
 
 ## E2. Previous-trial columns
 
@@ -1147,7 +1192,7 @@ Computed on the event sequence within each run, **before** any exclusion in the 
 
 ## E3. Tests
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:206`](../_interactive_notebooks/rsa_posthoc_common.py#L206-L212) — `one_sample_by_bin`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:207`](../_interactive_notebooks/rsa_posthoc_common.py#L207-L213) — `one_sample_by_bin`
 
 ```python
     for keys, part in binned.groupby([*by, "bin_start", "bin_stop", "bin"], dropna=False):
@@ -1159,7 +1204,7 @@ Computed on the event sequence within each run, **before** any exclusion in the 
     out["p_fdr"] = out.groupby(list(by), dropna=False)["p"].transform(lambda p: fdr(p)) if by else fdr(out["p"])
 ```
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:276`](../_interactive_notebooks/rsa_posthoc_common.py#L276-L284) — `paired_contrast`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:277`](../_interactive_notebooks/rsa_posthoc_common.py#L277-L285) — `paired_contrast`
 
 ```python
     for keys, part in groups:
@@ -1173,7 +1218,7 @@ Computed on the event sequence within each run, **before** any exclusion in the 
         lo, hi, p_boot = bootstrap_ci(diff.values)
 ```
 
-[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:312`](../_interactive_notebooks/rsa_posthoc_common.py#L312-L314) — `mixed_model`
+[`rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py:313`](../_interactive_notebooks/rsa_posthoc_common.py#L313-L315) — `mixed_model`
 
 ```python
         try:
@@ -1181,6 +1226,6 @@ Computed on the event sequence within each run, **before** any exclusion in the 
             ci = fit.conf_int()
 ```
 
-- Bin tests: one-sample t per condition × bin, FDR across the bins of each condition.
-- Paired contrasts use only subjects with **both** levels (e.g. Bretton's n = 18 with remembered and forgotten items), with a subject-resampling bootstrap CI of the difference.
+- Bin tests: one-sample t per operation × bin, FDR across the bins of each operation.
+- Paired contrasts use only subjects with **both** levels (e.g. Bretton's n = 18 with remembered and forgotten exemplars), with a subject-resampling bootstrap CI of the difference.
 - Mixed models use every trial with subject as the grouping factor; `re_formula="~C(memory)"` gives random slopes, i.e. (1 + memory | subject).

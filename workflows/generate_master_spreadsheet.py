@@ -8,8 +8,10 @@ under `bids_root`, locate the matching (preprocessed) BOLD file under
 per event. Unlike mvpa-decoding's volume-level table, rows here are events: pattern
 estimation (GLM or volume averaging) happens later, in estimate_patterns.py.
 
-Every column of the events.tsv is carried through, so any of them can be used in
-the `conditions` queries.
+Every column of the events.tsv is carried through: the events.hierarchy columns
+(e.g. category / subcategory / exemplar) that identify items, and any other column for queries
+(events.item_filter, template RSA event selection) and post-hoc analyses. `event_index` numbers
+the events of each run from 1.
 
 Usage:
     python workflows/generate_master_spreadsheet.py --config tutorial/config-haxby-rsa.example.json
@@ -31,7 +33,7 @@ REQUIRED_ENTITIES = ("sub", "task", "run")
 HANDLED_ENTITIES = ("sub", "ses", "task", "run")
 
 # trial_type values that are never items of interest (same blanket policy as
-# mvpa-decoding). Rows matching these are dropped before trial_index is assigned.
+# mvpa-decoding). Rows matching these are dropped before event_index is assigned.
 EXCLUDED_TRIAL_TYPE_EXACT = ("start_block", "end_block")
 EXCLUDED_TRIAL_TYPE_SUBSTRINGS = ("fixation", "postrt")
 
@@ -90,7 +92,7 @@ def process_events_file(events_path: str, derivatives_root: str, bold_glob: str)
     events.insert(3, "run", str(int(entities["run"])) if entities["run"].isdigit() else entities["run"])
     events.insert(4, "run_label", entities["run"])
     events.insert(5, "run_id", "_".join(p for p in (session, entities["task"], entities["run"]) if p))
-    events.insert(6, "trial_index", np.arange(1, len(events) + 1))
+    events.insert(6, "event_index", np.arange(1, len(events) + 1))
     for k, v in extra_entities.items():
         events[k] = v
     events["tr"] = tr
