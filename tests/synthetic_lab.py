@@ -138,23 +138,26 @@ def make_config(root, **template_overrides) -> dict:
                                   "category_mask": {"p_threshold": 0.05, "cluster_extent": 5}},
             "targets": {
                 "study_timecourse": {
-                    "events": q("task", "study"), "mode": "timecourse",
+                    "events": q("task", "study"), "mode": "timecourse",  # default comparison_sets: target only
                     "window": {"start": {"reference": "onset", "offset_seconds": 0},
                                "end": {"reference": "onset", "offset_seconds": 16}},
                     "extra_sets": {"replacement": {"column": "replace_category", "level": "category"}},
-                    "group": {"group_by": ["operation"], "comparisons": ["target", "related", "others", "replacement"]}},
+                    "group": {"group_by": ["operation"], "comparisons": ["target", "replacement"]}},
                 "encoding_fidelity": {
                     "events": q("task", "study"), "mode": "window_mean", "window": lag(),
+                    "comparison_sets": ["target", "related", "others"],
                     "group": {"group_by": ["operation"]}},
                 "manipulation": {
                     "events": q("task", "study"), "mode": "window_mean", "window": lag(),
+                    "comparison_sets": ["target", "related"],
                     "group": {"group_by": ["operation"], "comparisons": ["target", "related"]}},
                 "post_test": {
                     "events": q("task", "postmemory"), "mode": "window_mean", "window": lag(),
+                    "comparison_sets": ["target", "related", "others"],
                     "group": {"comparisons": ["target", "related", "others"]}},
             },
         },
-        "pipeline": {"output_dir": str(root / "out"), "analyses": ["template", "decoding"]},
+        "pipeline": {"output_dir": str(root / "out"), "analyses": ["template", "fidelity"]},
     }
     for key, value in template_overrides.items():
         user["template_rsa"][key] = value

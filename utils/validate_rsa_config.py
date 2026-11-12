@@ -22,6 +22,7 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import sys
 
 import pandas as pd
@@ -34,7 +35,7 @@ from utils.rsa_common import (
     validate_model_rdms, validate_query_node,
     validate_weighted_models, ANALYSES, FEATURE_LEVELS, EXEMPLAR_CONTRASTS, TARGET_MODES, evaluate_query_node,
     roi_source_path, validate_roi, validate_window, EXTRA_SET_LEVELS, POSTHOC_GROUP_KEYS, POSTHOC_TARGET_KEYS,
-    CV_STRATEGIES, VALIDATION_METHODS,
+    CV_STRATEGIES, VALIDATION_METHODS, COMPARISON_SETS, overlay_query,
 )
 from utils.preprocessing import check_confound_files, validate_preprocessing
 
@@ -143,12 +144,12 @@ def validate_template(cfg: dict, df, subjects: list):
         if roi not in cfg["rois"]:
             errors.append(f"template_rsa.rois: {roi!r} is not defined in `rois`")
     analyses = cfg["pipeline"].get("analyses") or ["rdm"]
-    decoding = "decoding" in analyses
-    if decoding and not tr["targets"]:
-        errors.append("template_rsa.targets: define at least one target set (pipeline.analyses has \"decoding\")")
-    elif tr["targets"] and not decoding:
-        warnings.append("template_rsa.targets are defined but pipeline.analyses has no \"decoding\": targets are "
-                        "not scored (add \"decoding\" to run stage 3)")
+    fidelity = "fidelity" in analyses
+    if fidelity and not tr["targets"]:
+        errors.append("template_rsa.targets: define at least one target set (pipeline.analyses has \"fidelity\")")
+    elif tr["targets"] and not fidelity:
+        warnings.append("template_rsa.targets are defined but pipeline.analyses has no \"fidelity\": targets are "
+                        "not scored (add \"fidelity\" to run stage 3)")
     val = tr["validation"]
     bad = set(val.get("methods") or []) - VALIDATION_METHODS
     if bad:
@@ -168,7 +169,7 @@ def validate_template(cfg: dict, df, subjects: list):
 
     tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
     item_col = exemplar_column(cfg)
-    for name, spec in (target_specs(cfg).items() if decoding else []):
+    for name, spec in (target_specs(cfg).items() if fidelity else []):
         path = f"template_rsa.targets.{name}"
         if spec["mode"] not in TARGET_MODES:
             errors.append(f"{path}.mode must be one of {sorted(TARGET_MODES)}")
@@ -177,6 +178,16 @@ def validate_template(cfg: dict, df, subjects: list):
             continue
         errors.extend(validate_query_node(spec["events"], columns, f"{path}.events"))
         errors.extend(validate_window(spec["window"], f"{path}.window"))
+        bad_sets = set(spec["comparison_sets"]) - COMPARISON_SETS
+        if bad_sets:
+            errors.append(f"{path}.comparison_sets: unknown {sorted(bad_sets)}; use {sorted(COMPARISON_SETS)} "
+                          "(templates named in other event columns go in extra_sets)")
+        if not spec["comparison_sets"] and not spec["extra_sets"]:
+            errors.append(f"{path}: no sets to score (comparison_sets and extra_sets are both empty)")
+        unscored = set(spec["group"]["comparisons"]) - set(spec["comparison_sets"]) - set(spec["extra_sets"])
+        if unscored:
+            errors.append(f"{path}.group.comparisons: {sorted(unscored)} are not scored; add them to comparison_sets "
+                          "(related / others) or extra_sets")
         if spec["related_level"] == "subcategory" and not subcategory:
             errors.append(f"{path}.related_level 'subcategory' needs template_rsa.subcategory_level")
         raw_spec = tr["targets"][name]
@@ -199,6 +210,37 @@ def validate_template(cfg: dict, df, subjects: list):
         for col in spec["group"]["group_by"] or []:
             if col not in columns:
                 errors.append(f"{path}.group.group_by: column {col!r} not in master spreadsheet")
+        ann = spec["annotation"]
+        if ann.get("trial_start_event"):
+            errors.extend(validate_query_node(ann["trial_start_event"], columns, f"{path}.annotation.trial_start_event"))
+        labels = ann.get("annotation_labels") or {}
+        if not isinstance(labels, dict) or not all(isinstance(v, list) for v in labels.values()):
+            errors.append(f"{path}.annotation.annotation_labels: {{display name: [trial_type, ...]}}")
+        if not (isinstance(ann.get("min_frequency"), (int, float)) and 0 < ann["min_frequency"] <= 1):
+            errors.append(f"{path}.annotation.min_frequency: a fraction in (0, 1]")
+        if ann.get("unlabeled"):
+            try:
+                re.compile(ann["unlabeled"])
+            except re.error as err:
+                errors.append(f"{path}.annotation.unlabeled: not a valid regex ({err})")
+        if ann.get("lag_seconds") is not None and not isinstance(ann["lag_seconds"], (int, float)):
+            errors.append(f"{path}.annotation.lag_seconds: seconds, or null")
+        overlay = spec["group"].get("overlay")
+        if overlay is not None:
+            if not isinstance(overlay, dict) or not overlay:
+                errors.append(f"{path}.group.overlay: must be {{name: {{query..., color, line_type, group}}}}")
+            else:
+                if spec["group"]["group_by"]:
+                    warnings.append(f"{path}.group: overlay is set, so group_by {spec['group']['group_by']} is ignored")
+                for oname, entry in overlay.items():
+                    opath = f"{path}.group.overlay.{oname}"
+                    if not isinstance(entry, dict):
+                        errors.append(f"{opath}: must be an object (an events query plus optional color / line_type / group)")
+                        continue
+                    errors.extend(validate_query_node(overlay_query(entry), columns, opath))
+                    for k in ("color", "line_type"):
+                        if k in entry and (isinstance(entry[k], bool) or not isinstance(entry[k], (int, str))):
+                            errors.append(f"{opath}.{k}: an integer (palette / line-style index) or a matplotlib string")
         if errors:
             continue
         targets = df[evaluate_query_node(spec["events"], df)]
@@ -222,7 +264,7 @@ def validate_template(cfg: dict, df, subjects: list):
     if "cv" in methods and len(runs_per_subject) and runs_per_subject.min() < 2:
         warnings.append("template_rsa.validation: cv needs >= 2 template runs; skipped for subject(s) "
                         f"{sorted(runs_per_subject[runs_per_subject < 2].index)}")
-    if decoding and errors == []:
+    if fidelity and errors == []:
         for name, spec in target_specs(cfg).items():
             overlap = set(df[evaluate_query_node(spec["events"], df)]["boldfile"]) & set(tmpl["boldfile"])
             if overlap:
@@ -249,8 +291,8 @@ def validate(cfg: dict, df, subjects=None):
         errors.append(f"subject(s) {missing_subjects} not in master spreadsheet")
     present = [s for s in subjects if s not in missing_subjects]
 
-    if "decoding" in analyses and "template" not in analyses:
-        errors.append('pipeline.analyses: "decoding" scores against the templates of the "template" analysis; add "template"')
+    if "fidelity" in analyses and "template" not in analyses:
+        errors.append('pipeline.analyses: "fidelity" scores against the templates of the "template" analysis; add "template"')
     for analysis, check in (("rdm", validate_rdm), ("template", validate_template)):
         if analysis in analyses:
             e, w = check(cfg, df, present)
@@ -315,7 +357,7 @@ def main():
         tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
         rows = {"template events": tmpl.groupby("subject").size(),
                 "template exemplars": tmpl.groupby("subject")[exemplar_column(cfg)].nunique()}
-        for name, spec in (target_specs(cfg).items() if "decoding" in analyses else []):
+        for name, spec in (target_specs(cfg).items() if "fidelity" in analyses else []):
             rows[f"{name} events"] = df[evaluate_query_node(spec["events"], df)].groupby("subject").size()
         print("Template RSA (per subject):\n" + pd.DataFrame(rows).fillna(0).astype(int).to_string())
     print(f"\nConfig OK ({len(warnings)} warning(s)).")

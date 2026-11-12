@@ -15,6 +15,6 @@ fi
 if [[ " $ANALYSES " == *" template "* ]]; then
   $PYTHON workflows/template_rsa.py --config "$CONFIG" --subject "$SUB"
 fi
-if [[ " $ANALYSES " == *" decoding "* ]]; then
-  $PYTHON workflows/decode_templates.py --config "$CONFIG" --subject "$SUB"
+if [[ " $ANALYSES " == *" fidelity "* ]]; then
+  $PYTHON workflows/template_fidelity.py --config "$CONFIG" --subject "$SUB"
 fi

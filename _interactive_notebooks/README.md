@@ -2,7 +2,7 @@
 
 The core pipeline is design-agnostic. It builds templates, scores target events against them, and writes one **group raw table** per ROI and target set:
 
-`<output_dir>/group/decoding/raw/roi-<roi>_target-<set>_scores.csv`
+`<output_dir>/group/fidelity/raw/roi-<roi>_target-<set>_scores.csv`
 
 Each table has one row per subject × event × [volume] × weighting level × comparison set. Every events.tsv column rides along. Anything specific to a study design starts from that table, in a notebook here, as in mvpa-decoding:
 

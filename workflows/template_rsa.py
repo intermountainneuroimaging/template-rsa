@@ -4,7 +4,7 @@ Stage 2 (template): feature-weighted exemplar templates and their validation for
 the Lewis-Peacock / Banich lab method of Kim et al. (2020, Nat Commun 11:6239) and Bretton et al.
 (2024, J Cogn Neurosci 36:2117). See docs/lab_methods.md for the formal description and for which
 step comes from the papers / released code and which was added here. Scoring target events against
-the templates is stage 3 (workflows/decode_templates.py).
+the templates is stage 3 (workflows/template_fidelity.py).
 
 Per ROI in template_rsa.rois:
   1. Time series. Each run is masked to the ROI, cleaned (detrend, filter, optional confound
@@ -27,7 +27,7 @@ Per ROI in template_rsa.rois:
      exemplars that occur in only one run (Bretton et al.) are handled.
   4. Templates. For each exemplar: the z-scored volumes in templates.window (lag-shifted) of
      each of its template events, averaged over volumes and events, times its weights, inside its
-     category mask. Built from ALL template runs and saved for the decoding stage.
+     category mask. Built from ALL template runs and saved for the fidelity stage.
   5. Validation (template_rsa.validation.methods):
        "kim2020"  the published localizer validation (Kim et al. 2020 code, rsa_decode_02_item.m):
                   every presentation (item x run) correlated with every other one, each pattern
@@ -93,8 +93,15 @@ class RunData:
 
 
 def target_specs(cfg: dict) -> dict:
-    return {name: merge_with_defaults(spec, copy.deepcopy(TEMPLATE_TARGET_DEFAULTS))
-            for name, spec in cfg["template_rsa"]["targets"].items()}
+    """Target sets with defaults filled in. Scored sets: `comparison_sets` (default the trial's own exemplar
+    only; "related" / "others" opt in) plus any `extra_sets`; group.comparisons defaults to all of them."""
+    specs = {}
+    for name, spec in cfg["template_rsa"]["targets"].items():
+        spec = merge_with_defaults(spec, copy.deepcopy(TEMPLATE_TARGET_DEFAULTS))
+        if not spec["group"].get("comparisons"):
+            spec["group"]["comparisons"] = list(spec["comparison_sets"]) + list(spec["extra_sets"])
+        specs[name] = spec
+    return specs
 
 
 def template_levels(cfg: dict) -> tuple:
@@ -474,7 +481,7 @@ def validate_cv(cfg, sub_df, runs, masker, items, tmpl_events, folds):
 
 
 # =====================================================
-# templates on disk (read by decode_templates.py)
+# templates on disk (read by template_fidelity.py)
 # =====================================================
 
 def templates_path(out_dir, subject, roi, level):
@@ -531,7 +538,7 @@ def print_validation(summary: pd.DataFrame):
 
 def template_rsa_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str) -> dict:
     """Stage 2 (template): category masks, exemplar weights and templates from all template runs (saved for
-    the decoding stage), plus the validation methods in template_rsa.validation.methods."""
+    the fidelity stage), plus the validation methods in template_rsa.validation.methods."""
     tr_cfg = cfg["template_rsa"]
     val_cfg = tr_cfg["validation"]
     sub_df = df[df["subject"] == subject].copy()

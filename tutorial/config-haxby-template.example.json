@@ -83,6 +83,10 @@
           ]
         },
         "mode": "window_mean",
+        "comparison_sets": [
+          "target",
+          "others"
+        ],
         "window": {
           "start": {
             "reference": "onset",
@@ -117,6 +121,10 @@
           ]
         },
         "mode": "timecourse",
+        "comparison_sets": [
+          "target",
+          "others"
+        ],
         "window": {
           "start": {
             "reference": "onset",
@@ -155,7 +163,7 @@
     ],
     "analyses": [
       "template",
-      "decoding"
+      "fidelity"
     ]
   }
 }

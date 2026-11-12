@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Stage 3 (decoding): score target events against the templates built in stage 2 (template_rsa.py)
-for one subject. The maths is the lab method's (Kim et al. 2020 code: `ytarg .* xbeta`, corr2,
+Stage 3 (fidelity): template fidelity of target events for one subject -- how similar each event's
+pattern is to the template of its own exemplar (Bretton et al. 2024's "representational fidelity";
+Kim et al. 2020's "encoding fidelity" and item-level timecourse). Templates come from stage 2
+(template_rsa.py). The maths is the lab method's (Kim et al. 2020 code: `ytarg .* xbeta`, corr2,
 mean r over a set, Fisher z); see docs/lab_methods.md.
 
 For each ROI and named target set (template_rsa.targets), each target event -- or each volume of
-its window, mode "timecourse" -- is correlated with every template: the target pattern is cut to
-template j's category mask and weighted by j's weights (feature_weighting.weight_target_patterns),
-then Pearson r with template j. Comparison sets:
-  target   the event's own exemplar (the finest events.hierarchy level)
-  related  the other exemplars of its category (or subcategory: related_level)
+its window, mode "timecourse" -- is correlated with the template of the event's own exemplar (the
+finest events.hierarchy level): the target pattern is cut to that template's category mask and
+weighted by its weights (feature_weighting.weight_target_patterns), then Pearson r. Only the
+templates a set needs are scored. Opt-in sets (targets.<set>.comparison_sets, extra_sets):
+  target   the event's own exemplar (the default, and usually the only set)
+  related  the other exemplars of its category (or subcategory: related_level) -- a control:
+           target - related is the exemplar-specific part of the score
   others   the exemplars of the other categories
   <name>   extra_sets: the templates whose exemplar / category / subcategory is named in another
            events column (e.g. every template of the replacement category on replace trials)
@@ -23,11 +27,11 @@ are still scored, with a warning that they are not independent of the templates.
 Every events.tsv column is carried into the score tables, so study-specific analyses run on them
 afterwards, in the post-hoc notebooks (_interactive_notebooks/).
 
-Outputs (under <output_dir>/sub-<subject>/decoding/):
+Outputs (under <output_dir>/sub-<subject>/fidelity/):
   sub-<s>_roi-<roi>_target-<set>_scores.csv     one row per event x [volume] x level x comparison
 
 Usage:
-    python workflows/decode_templates.py --config CONFIG --subject 01
+    python workflows/template_fidelity.py --config CONFIG --subject 01
 """
 
 import argparse
@@ -73,20 +77,25 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
     meta_cols = [c for c in events.columns if c not in EVENT_META_COLUMNS]
 
     rows, skipped = [], 0
+    builtin = list(spec["comparison_sets"])
     for level, ts in template_sets.items():
         known = set(ts.templates)
-        all_items = list(ts.templates)
-        col_of = {it: j for j, it in enumerate(all_items)}
         for bold, run_events in events.groupby("boldfile"):
             rd = runs[bold]
-            S = score_matrix(ts, rd.clean, all_items) if spec["mode"] == "timecourse" else None
+            todo = []  # (event, its comparison sets)
             for _, ev in run_events.iterrows():
                 item = ev[ex_col]
                 if item not in known:
                     skipped += 1
                     continue
-                sets = comparison_sets(ts, item, spec["related_level"])
+                sets = {k: v for k, v in comparison_sets(ts, item, spec["related_level"]).items() if k in builtin}
                 sets.update(extra_sets(ts, ev, spec["extra_sets"]))
+                todo.append((ev, sets))
+            needed = list(dict.fromkeys(m for _, sets in todo for members in sets.values() for m in members))
+            col_of = {it: j for j, it in enumerate(needed)}
+            # only the templates some event needs (the trial's own exemplar, unless more sets are opted in)
+            S = score_matrix(ts, rd.clean, needed) if spec["mode"] == "timecourse" and needed else None
+            for ev, sets in todo:
                 meta = {c: ev[c] for c in meta_cols}
                 if spec["mode"] == "timecourse":
                     vols = window_volumes(spec["window"], float(ev["onset"]), float(ev["duration"]),
@@ -122,12 +131,12 @@ def load_templates(template_dir: str, subject: str, roi: str, levels: list) -> t
     return sets, runs
 
 
-def decode_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str) -> dict:
+def fidelity_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str) -> dict:
     tr_cfg = cfg["template_rsa"]
     sub_df = df[df["subject"] == subject].copy()
     specs = target_specs(cfg)
     template_dir = os.path.join(subject_dir(output_dir, subject), "template_rsa")
-    out_dir = os.path.join(subject_dir(output_dir, subject), "decoding")
+    out_dir = os.path.join(subject_dir(output_dir, subject), "fidelity")
     os.makedirs(out_dir, exist_ok=True)
     needed = set()
     for spec in specs.values():
@@ -164,7 +173,7 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config)
     df = read_master_spreadsheet(args.master_spreadsheet or cfg["event_extraction"]["output_file"])
-    decode_subject(cfg, df, str(args.subject), args.analysis_output_dir or cfg["pipeline"]["output_dir"])
+    fidelity_subject(cfg, df, str(args.subject), args.analysis_output_dir or cfg["pipeline"]["output_dir"])
 
 
 if __name__ == "__main__":

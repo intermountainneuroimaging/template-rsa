@@ -203,7 +203,7 @@ The count of volumes comes from the **duration**, rounded to whole TRs, not from
 
 ## A3. Cleaning a run without moving its volumes
 
-TR-wise analyses (volume averaging, template RSA, TR-wise decoding) need a cleaned, z-scored series in which **volume k is still volume k** after censoring:
+TR-wise analyses (volume averaging, template RSA, TR-wise fidelity) need a cleaned, z-scored series in which **volume k is still volume k** after censoring:
 
 [`betaestimation/betaestimation/timeseries.py:81`](../../betaestimation/betaestimation/timeseries.py#L81-L95) — `clean_run`
 
@@ -544,7 +544,7 @@ onset  duration  trial_type  category  subcategory  exemplar
 }
 ```
 
-[`rsaworkflow/utils/rsa_common.py:480`](../utils/rsa_common.py#L480-L498) — `label_events`
+[`rsaworkflow/utils/rsa_common.py:491`](../utils/rsa_common.py#L491-L509) — `label_events`
 
 ```python
 def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -574,7 +574,7 @@ def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 `pattern_estimation.level` picks what one pattern is: `"item"` (one per event of interest) or a hierarchy level, whose items are pooled per run (`"exemplar"`: an exemplar's repeats; `"category"`: all its exemplars).
 
-[`rsaworkflow/utils/rsa_common.py:535`](../utils/rsa_common.py#L535-L545) — `check_hierarchy`
+[`rsaworkflow/utils/rsa_common.py:546`](../utils/rsa_common.py#L546-L556) — `check_hierarchy`
 
 ```python
     for coarse, fine in zip(levels, levels[1:]):
@@ -593,7 +593,7 @@ def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 - **Nesting** is what makes the hierarchy linear: every value has exactly one parent at the level above (dog01 is always animal / mammal). The validator rejects a file where it doesn't hold, instead of silently picking one parent.
 - ▲ **Note — name collisions.** Regressors and pattern files are named by `safe_name(value)`, which keeps only letters and digits, so `dog_1` and `dog1` would be fit as one regressor. The validator rejects such values at every level, and betaestimation's `estimate_run_patterns` refuses colliding labels too.
 
-[`rsaworkflow/utils/rsa_common.py:562`](../utils/rsa_common.py#L562-L567) — `resolve_rows`
+[`rsaworkflow/utils/rsa_common.py:573`](../utils/rsa_common.py#L573-L578) — `resolve_rows`
 
 ```python
         items = label_events(df, cfg)
@@ -709,7 +709,7 @@ Each item's value at the RDM level becomes betaestimation's `label` and its `eve
     rdm = compute_data_rdm(dataset, cfg["rdm"], rows, level)
 ```
 
-[`rsaworkflow/utils/rsa_common.py:749`](../utils/rsa_common.py#L749-L755) — `clean_measurements`
+[`rsaworkflow/utils/rsa_common.py:760`](../utils/rsa_common.py#L760-L766) — `clean_measurements`
 
 ```python
 def clean_measurements(measurements: np.ndarray):
@@ -725,7 +725,7 @@ Voxels that are non-finite or constant across all patterns (outside the brain ma
 
 ## C2. Distances
 
-[`rsaworkflow/utils/rsa_common.py:812`](../utils/rsa_common.py#L812-L834) — `compute_data_rdm`
+[`rsaworkflow/utils/rsa_common.py:823`](../utils/rsa_common.py#L823-L845) — `compute_data_rdm`
 
 ```python
 def compute_data_rdm(dataset, rdm_cfg: dict, row_order: list, level: str):
@@ -760,7 +760,7 @@ def compute_data_rdm(dataset, rdm_cfg: dict, row_order: list, level: str):
 
 The pattern-level view (every pattern its own row) uses a non-cross-validated distance:
 
-[`rsaworkflow/utils/rsa_common.py:797`](../utils/rsa_common.py#L797-L809) — `compute_pattern_rdm`
+[`rsaworkflow/utils/rsa_common.py:808`](../utils/rsa_common.py#L808-L820) — `compute_pattern_rdm`
 
 ```python
 def compute_pattern_rdm(dataset, rdm_cfg: dict, level: str) -> np.ndarray:
@@ -780,7 +780,7 @@ def compute_pattern_rdm(dataset, rdm_cfg: dict, level: str) -> np.ndarray:
 
 ## C3. Model RDMs and their comparison with the data
 
-[`rsaworkflow/utils/rsa_common.py:711`](../utils/rsa_common.py#L711-L724) — `build_model_rdms`
+[`rsaworkflow/utils/rsa_common.py:722`](../utils/rsa_common.py#L722-L735) — `build_model_rdms`
 
 ```python
     for name, spec in cfg["model_rdms"].items():
@@ -874,7 +874,7 @@ Weighted models have free weights, so they are only ever scored on **held-out su
 
 ## D1. Two copies of each run
 
-[`rsaworkflow/workflows/template_rsa.py:119`](../workflows/template_rsa.py#L119-L128) — `load_run`
+[`rsaworkflow/workflows/template_rsa.py:126`](../workflows/template_rsa.py#L126-L135) — `load_run`
 
 ```python
 def load_run(cfg: dict, run_df: pd.DataFrame, masker: NiftiMasker) -> RunData:
@@ -889,11 +889,11 @@ def load_run(cfg: dict, run_df: pd.DataFrame, masker: NiftiMasker) -> RunData:
     return RunData(first["boldfile"], tr, n_frames, nuisance.kept(n_frames), clean, glm_data, nuisance.confounds)
 ```
 
-Every run in the template phase and the category-mask events (template stage), or in the target phases (decoding stage), is loaded once per ROI, into a **z-scored TR series with NaN rows at censored volumes** (patterns and scoring) and a **mean-scaled, censored copy** (the feature-selection GLMs) — both from Part A.
+Every run in the template phase and the category-mask events (template stage), or in the target phases (fidelity stage), is loaded once per ROI, into a **z-scored TR series with NaN rows at censored volumes** (patterns and scoring) and a **mean-scaled, censored copy** (the feature-selection GLMs) — both from Part A.
 
 ## D2. Category masks
 
-[`rsaworkflow/workflows/template_rsa.py:169`](../workflows/template_rsa.py#L169-L195) — `feature_selection`
+[`rsaworkflow/workflows/template_rsa.py:176`](../workflows/template_rsa.py#L176-L202) — `feature_selection`
 
 ```python
     if need_category_glm and len(categories) > 1:
@@ -931,7 +931,7 @@ Every run in the template phase and the category-mask events (template stage), o
 
 ## D3. Exemplar weights (the papers' item weights)
 
-[`rsaworkflow/workflows/template_rsa.py:202`](../workflows/template_rsa.py#L202-L223) — `feature_selection`
+[`rsaworkflow/workflows/template_rsa.py:209`](../workflows/template_rsa.py#L209-L230) — `feature_selection`
 
 ```python
     if "exemplar" in fw["levels"]:
@@ -960,7 +960,7 @@ Every run in the template phase and the category-mask events (template stage), o
 
 Least-squares-all over the template runs: one shared regressor per template exemplar (the finest `events.hierarchy` level), and each exemplar's weights are the t-values of **exemplar vs. the mean of the other exemplars** (or only those of its category / subcategory, the hierarchy levels named by `category_level` / `subcategory_level`). Template-phase events that are *not* template events — e.g. Bretton's `old_<exemplar>` scenes — fall into `glm_events`' nuisance branch, each with its own regressor because their `trial_type` is unique:
 
-[`rsaworkflow/workflows/template_rsa.py:143`](../workflows/template_rsa.py#L143-L149) — `glm_events`
+[`rsaworkflow/workflows/template_rsa.py:150`](../workflows/template_rsa.py#L150-L156) — `glm_events`
 
 ```python
 def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merge_gap=None) -> pd.DataFrame:
@@ -974,7 +974,7 @@ def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merg
 
 ## D4. Templates
 
-[`rsaworkflow/workflows/template_rsa.py:300`](../workflows/template_rsa.py#L300-L322) — `build_template_sets`
+[`rsaworkflow/workflows/template_rsa.py:307`](../workflows/template_rsa.py#L307-L329) — `build_template_sets`
 
 ```python
     occurrences = {}  # exemplar -> list of (event row label, raw pattern)
@@ -1002,9 +1002,9 @@ def glm_events(run_df: pd.DataFrame, interest: pd.Series, names: pd.Series, merg
             templates[item] = np.mean([p for _, p in occurrences[item]], axis=0)[m] * w[m]
 ```
 
-A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones. The templates are built from all template runs and saved, with their masks and weights, for the decoding stage:
+A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones. The templates are built from all template runs and saved, with their masks and weights, for the fidelity stage:
 
-[`rsaworkflow/workflows/template_rsa.py:488`](../workflows/template_rsa.py#L488-L499) — `save_template_set`
+[`rsaworkflow/workflows/template_rsa.py:495`](../workflows/template_rsa.py#L495-L506) — `save_template_set`
 
 ```python
 def save_template_set(path, ts: TemplateSet, template_runs):
@@ -1021,9 +1021,9 @@ def save_template_set(path, ts: TemplateSet, template_runs):
                         weight_target=np.array(ts.weight_target), template_runs=np.array(sorted(template_runs), dtype=str))
 ```
 
-## D5. Scoring a target pattern (decoding stage, `decode_templates.py`)
+## D5. Scoring a target pattern (fidelity stage, `template_fidelity.py`)
 
-[`rsaworkflow/workflows/template_rsa.py:246`](../workflows/template_rsa.py#L246-L254) — `TemplateSet.score`
+[`rsaworkflow/workflows/template_rsa.py:253`](../workflows/template_rsa.py#L253-L261) — `TemplateSet.score`
 
 ```python
     def score(self, y: np.ndarray, item: str, template=None) -> float:
@@ -1037,7 +1037,7 @@ def save_template_set(path, ts: TemplateSet, template_runs):
         return pearson(t, x)
 ```
 
-[`rsaworkflow/workflows/template_rsa.py:264`](../workflows/template_rsa.py#L264-L276) — `score_matrix`
+[`rsaworkflow/workflows/template_rsa.py:271`](../workflows/template_rsa.py#L271-L283) — `score_matrix`
 
 ```python
 def score_matrix(ts: TemplateSet, data: np.ndarray, items: list) -> np.ndarray:
@@ -1058,7 +1058,7 @@ def score_matrix(ts: TemplateSet, data: np.ndarray, items: list) -> np.ndarray:
 - The target pattern is weighted by the **same exemplar's** weights before correlating (from the authors' code: `ytarg_pat .* xbeta`), so template and target live in the same feature space.
 - `score_matrix` computes the Pearson r of **every volume of a run** with every template in one vectorized pass; trial timecourses are then just indexing into it. Censored volumes (NaN rows) yield NaN scores.
 
-[`rsaworkflow/workflows/template_rsa.py:283`](../workflows/template_rsa.py#L283-L291) — `comparison_sets`
+[`rsaworkflow/workflows/template_rsa.py:290`](../workflows/template_rsa.py#L290-L298) — `comparison_sets`
 
 ```python
 def comparison_sets(ts: TemplateSet, item: str, related_level: str) -> dict:
@@ -1072,7 +1072,7 @@ def comparison_sets(ts: TemplateSet, item: str, related_level: str) -> dict:
     return {"target": [item], "related": related, "others": others}
 ```
 
-[`rsaworkflow/workflows/decode_templates.py:51`](../workflows/decode_templates.py#L51-L65) — `extra_sets`
+[`rsaworkflow/workflows/template_fidelity.py:55`](../workflows/template_fidelity.py#L55-L69) — `extra_sets`
 
 ```python
 def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
@@ -1092,7 +1092,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
     return sets
 ```
 
-[`rsaworkflow/workflows/decode_templates.py:95`](../workflows/decode_templates.py#L95-L99) — `score_targets`
+[`rsaworkflow/workflows/template_fidelity.py:104`](../workflows/template_fidelity.py#L104-L108) — `score_targets`
 
 ```python
                         for comp, members in sets.items():
@@ -1107,7 +1107,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
 
 ## D6. Template validation
 
-[`rsaworkflow/workflows/template_rsa.py:384`](../workflows/template_rsa.py#L384-L401) — `validate_kim2020`
+[`rsaworkflow/workflows/template_rsa.py:391`](../workflows/template_rsa.py#L391-L408) — `validate_kim2020`
 
 ```python
     PW = np.array([u["pattern"] * ts.weights[e] for u, e in zip(units, ex)])
@@ -1132,7 +1132,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
 
 `kim2020` is the published validation (Kim et al. 2020, `rsa_decode_02_item.m`): every presentation (item × run) against every other, each pattern weighted by **its own** item's weights and both cut to the row item's category mask, Fisher z per pair. ▲ Note: as published, the masks and weights (D2–D3) come from all template runs, including the presentation being validated.
 
-[`rsaworkflow/workflows/template_rsa.py:412`](../workflows/template_rsa.py#L412-L430) — `resolve_folds`
+[`rsaworkflow/workflows/template_rsa.py:419`](../workflows/template_rsa.py#L419-L437) — `resolve_folds`
 
 ```python
 def resolve_folds(cv_cfg: dict, tmpl_events: pd.DataFrame) -> list:
@@ -1156,7 +1156,7 @@ def resolve_folds(cv_cfg: dict, tmpl_events: pd.DataFrame) -> list:
     return [(str(k), [b for b in bolds if b not in g], g) for k, g in enumerate(groups, start=1) if g]
 ```
 
-[`rsaworkflow/workflows/template_rsa.py:443`](../workflows/template_rsa.py#L443-L464) — `validate_cv`
+[`rsaworkflow/workflows/template_rsa.py:450`](../workflows/template_rsa.py#L450-L471) — `validate_cv`
 
 ```python
     for fold, train, test in folds:
@@ -1185,9 +1185,9 @@ def resolve_folds(cv_cfg: dict, tmpl_events: pd.DataFrame) -> list:
 
 `cv` (not in the papers; mvpa-decoding's `kfold_cv`) re-fits D2–D4 on the training runs of each fold and scores each held-out presentation against every fold template exactly as a target is scored (D5) — the fully held-out check.
 
-## D7. The group raw table (decoding group stage)
+## D7. The group raw table (fidelity group stage)
 
-[`rsaworkflow/workflows/group_decoding.py:91`](../workflows/group_decoding.py#L91-L96) — `group_decoding`
+[`rsaworkflow/workflows/group_fidelity.py:189`](../workflows/group_fidelity.py#L189-L194) — `group_fidelity`
 
 ```python
             scores = load_scores(output_dir, roi, name, subjects)
@@ -1198,11 +1198,12 @@ def resolve_folds(cv_cfg: dict, tmpl_events: pd.DataFrame) -> list:
             scores.to_csv(os.path.join(raw_dir, f"{tag}_scores.csv"), index=False)
 ```
 
-[`rsaworkflow/workflows/group_decoding.py:60`](../workflows/group_decoding.py#L60-L66) — `describe`
+[`rsaworkflow/workflows/group_fidelity.py:67`](../workflows/group_fidelity.py#L67-L74) — `describe`
 
 ```python
     scores = scores[scores["comparison"].isin(g["comparisons"])].copy()
-    scores["group"] = group_label(scores, list(g["group_by"] or []))
+    scores["group"] = group_label(scores, list(g["group_by"] or []), g.get("overlay"))
+    scores = scores[scores["group"].notna()]
     by = [*KEY, "group"] + (["tr_offset"] if timecourse else [])
     subj = scores.groupby(["subject", *by], as_index=False).agg(
         z=("z", "mean"), n_events=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))

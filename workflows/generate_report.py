@@ -16,11 +16,11 @@ Group report (default) -> <output_dir>/group/rsa_report.pdf (+ workflow.png)
      category-mask sizes, subjects flagged where target <= others, and the presentation-level
      validation matrices averaged over subjects (kim2020: presentation x presentation; cv: per fold,
      held-out presentation x fold template) -- every presentation shown separately
-  decoding analysis, per ROI x target set: descriptive timecourses / bars and comparison-set tests
+  fidelity analysis, per ROI x target set: descriptive timecourses / bars and comparison-set tests
 
 Subject report (--subject S) -> <output_dir>/sub-S/rsa/sub-S_rsa_report.pdf
   the same sections for one subject: its RDM / MDS / model fits, its template validation and
-  matrices, and its decoding timecourses / bars.
+  matrices, and its fidelity timecourses / bars.
 
 Usage:
     python workflows/generate_report.py --config tutorial/config-haxby-rsa.example.json
@@ -44,7 +44,10 @@ import pandas as pd  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import build_model_rdms, hierarchy, load_config, pattern_level, rdm_level, row_names, pattern_index_path, safe_name, subject_dir  # noqa: E402
+from utils.rsa_common import (  # noqa: E402
+    build_model_rdms, hierarchy, load_config, pattern_index_path, pattern_level, rdm_level, read_master_spreadsheet,
+    row_names, safe_name, subject_dir,
+)
 from utils.rsa_plots import (  # noqa: E402
     draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_validation_matrix, draw_weights, draw_workflow,
 )
@@ -441,23 +444,28 @@ def workflow_boxes(cfg, subjects) -> dict:
                              "presentation scored against every fold template as a target")
         lines.append("summary: target (same exemplar) / related (same category) / others (other categories)")
         boxes["validation"] = ("Template validation", lines)
-        if "decoding" in analyses:
+        if "fidelity" in analyses:
             from workflows.template_rsa import target_specs
             lines = []
             for name, spec in target_specs(cfg).items():
-                extra = f"; extra sets {', '.join(spec['extra_sets'])}" if spec["extra_sets"] else ""
+                sets = list(spec["comparison_sets"]) + [f"{x} (extra)" for x in spec["extra_sets"]]
+                rel = f" (related = same {spec['related_level']})" if "related" in spec["comparison_sets"] else ""
+                g = spec["group"]
+                by = (f"; lines: {', '.join(g['overlay'])}" if g.get("overlay")
+                      else f"; lines by {' x '.join(g['group_by'])}" if g.get("group_by") else "")
                 lines.append(f"{name}: {describe_query(spec['events'])}; {spec['mode']}, window "
-                             f"{describe_window(spec['window'])}; related = same {spec['related_level']}{extra}")
-            lines.append("score vs. template j: pattern inside j's category mask x j's weights, Pearson r; "
-                         "mean r over a comparison set, then Fisher z")
-            boxes["decoding"] = ("Decoding (target events vs. templates)", lines)
+                             f"{describe_window(spec['window'])}; sets: {', '.join(sets)}{rel}{by}")
+            lines.append("score: the event's pattern inside its own exemplar's category mask x that exemplar's "
+                         "weights, Pearson r with the exemplar's template, Fisher z (sets of several templates: "
+                         "mean r, then z)")
+            boxes["fidelity"] = ("Template fidelity (each event vs. its own exemplar's template)", lines)
     group = []
     if "rdm" in analyses:
         group.append("RDM: mean RDM, model fits with noise ceiling, statistics")
     if "template" in analyses:
         group.append("templates: validation per subject and averaged over subjects")
-    if "decoding" in analyses:
-        group.append("decoding: group raw table (every events.tsv column) -> study-specific post-hoc notebooks")
+    if "fidelity" in analyses:
+        group.append("fidelity: group raw table (every events.tsv column) -> study-specific post-hoc notebooks")
     boxes["group"] = ("Group level and reports", group)
     return boxes
 
@@ -485,7 +493,7 @@ def template_summary_lines(cfg) -> list:
              + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off"),
              f"  validation:   {', '.join(val['methods']) if val['enabled'] else 'off'}"
              + (f" (cv: {val['cross_validation']['strategy']})" if "cv" in val["methods"] else "")]
-    if "decoding" in (cfg["pipeline"].get("analyses") or []):
+    if "fidelity" in (cfg["pipeline"].get("analyses") or []):
         for name, spec in target_specs(cfg).items():
             lines.append(f"  target {name}: {spec['mode']}, group_by {spec['group']['group_by']}")
     return lines
@@ -624,20 +632,23 @@ def template_section(pdf, cfg, output_dir, subjects, subject=None):
             matrix_pages(pdf, roi, cells, items, who, n_subjects=n_sub)
 
 
-def decoding_section(pdf, cfg, output_dir, subject=None):
-    """Descriptive decoding pages per ROI x target set (the post-hoc notebooks hold the study statistics)."""
-    from utils.rsa_plots import draw_template_bars, draw_template_timecourse
-    from workflows.group_decoding import describe
+def fidelity_section(pdf, cfg, output_dir, subject=None):
+    """Descriptive fidelity pages per ROI x target set (the post-hoc notebooks hold the study statistics)."""
+    from utils.rsa_common import resolve_overlay_styles
+    from utils.rsa_plots import draw_template_bars, draw_template_timecourse, overlay_panels
+    from workflows.group_fidelity import compute_event_markers, describe
     from workflows.template_rsa import target_specs
 
-    gdir = os.path.join(output_dir, "group", "decoding")
+    gdir = os.path.join(output_dir, "group", "fidelity")
+    sheet = cfg["event_extraction"]["output_file"]
+    master = read_master_spreadsheet(sheet) if subject and os.path.exists(sheet) else None
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
         tables = []
         for name, spec in target_specs(cfg).items():
             g = spec["group"]
             timecourse = spec["mode"] == "timecourse"
             if subject:
-                scores = read_csv(os.path.join(subject_dir(output_dir, subject), "decoding",
+                scores = read_csv(os.path.join(subject_dir(output_dir, subject), "fidelity",
                                                f"sub-{subject}_roi-{roi}_target-{name}_scores.csv"),
                                   dtype={"subject": str}, low_memory=False)
                 if scores is None or scores.empty:
@@ -649,26 +660,43 @@ def decoding_section(pdf, cfg, output_dir, subject=None):
                 tests = read_csv(prefix + "_comparison-tests.csv")
                 if summary is None:
                     continue
+            if summary.empty:
+                print(f"  (i) ROI {roi}, {name}: no events in any group / overlay condition; no fidelity page")
+                continue
             who = f"sub-{subject}, " if subject else ""
             levels = list(dict.fromkeys(summary["level"]))
             comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
+            styles = resolve_overlay_styles(g.get("overlay"))
+            markers = []
             if timecourse:
-                fig, axes = plt.subplots(len(comps), len(levels), figsize=PAGE, squeeze=False)
+                if subject:
+                    ev = master[master["subject"] == subject] if master is not None else None
+                    markers = compute_event_markers(ev, spec) if ev is not None and len(ev) else []
+                else:
+                    mk = read_csv(os.path.join(gdir, f"roi-{roi}_target-{safe_name(name)}_event-markers.csv"))
+                    markers = mk.fillna({"label": ""}).to_dict("records") if mk is not None else []
+            fig = plt.figure(figsize=PAGE)
+            if timecourse:
+                rows = [(comp, panel) for comp in comps for panel in overlay_panels(styles)]
+                gs = fig.add_gridspec(max(len(rows), 3), len(levels))
                 for j, level in enumerate(levels):
-                    for i, comp in enumerate(comps):
-                        draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}")
+                    for i, (comp, panel) in enumerate(rows):
+                        draw_template_timecourse(fig.add_subplot(gs[i, j]), summary[summary["level"] == level], comp,
+                                                 f"{level} | {comp}", styles, panel, markers,
+                                                 spec["annotation"].get("lag_seconds"))
             else:
-                fig, axes = plt.subplots(len(levels), 1, figsize=PAGE, squeeze=False)
-                for ax, level in zip(axes.flat, levels):
-                    draw_template_bars(ax, subj[subj["level"] == level], comps, f"{level}-weighted templates")
-            fig.suptitle(f"{who}ROI {roi}: decoding, {name} ({spec['mode']})", fontsize=12, weight="bold")
+                gs = fig.add_gridspec(max(len(levels), 2), 1)
+                for i, level in enumerate(levels):
+                    draw_template_bars(fig.add_subplot(gs[i, 0]), subj[subj["level"] == level], comps,
+                                       f"{level}-weighted templates", styles)
+            fig.suptitle(f"{who}ROI {roi}: fidelity, {name} ({spec['mode']})", fontsize=12, weight="bold")
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
             if not subject:
                 tables.append((f"{name}: comparison sets (paired t, FDR)", tests))
         if tables:
-            table_page(pdf, f"ROI {roi}: decoding (descriptive; study statistics live in the post-hoc notebooks)", tables)
+            table_page(pdf, f"ROI {roi}: fidelity (descriptive; study statistics live in the post-hoc notebooks)", tables)
 
 
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
@@ -701,8 +729,8 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
                     roi_group_pages(pdf, cfg, output_dir, roi, subjects)
         if "template" in analyses:
             template_section(pdf, cfg, output_dir, subjects, subject)
-        if "decoding" in analyses:
-            decoding_section(pdf, cfg, output_dir, subject)
+        if "fidelity" in analyses:
+            fidelity_section(pdf, cfg, output_dir, subject)
     print(f"Wrote {out}")
     return out
 

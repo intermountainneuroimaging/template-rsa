@@ -192,6 +192,10 @@
           ]
         },
         "mode": "window_mean",
+        "comparison_sets": [
+          "target",
+          "related"
+        ],
         "window": {
           "start": {
             "reference": "onset",
@@ -233,6 +237,9 @@
           ]
         },
         "mode": "window_mean",
+        "comparison_sets": [
+          "target"
+        ],
         "window": {
           "start": {
             "reference": "onset",
@@ -246,8 +253,7 @@
         "group": {
           "group_by": [],
           "comparisons": [
-            "target",
-            "related"
+            "target"
           ]
         }
       }
@@ -258,7 +264,7 @@
     "subjects": null,
     "analyses": [
       "template",
-      "decoding"
+      "fidelity"
     ]
   }
 }

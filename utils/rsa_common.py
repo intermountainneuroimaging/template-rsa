@@ -37,7 +37,7 @@ BIDS_ENTITY_RE = re.compile(r"(?:^|_)(?P<key>[a-zA-Z]+)-(?P<val>[^_.]+)")
 
 MATCH_TYPES = {"exact", "in", "regex"}
 BOOL_KEYS = {"and", "or", "not"}
-ANALYSES = {"rdm", "template", "decoding"}
+ANALYSES = {"rdm", "template", "fidelity"}
 VALIDATION_METHODS = {"kim2020", "cv"}
 CV_STRATEGIES = {"per_run", "group_kfold", "explicit_groups"}
 FEATURE_LEVELS = {"exemplar", "category", "none"}
@@ -195,7 +195,7 @@ def default_config() -> dict:
         "pipeline": {
             "output_dir": "out",
             "subjects": None,
-            "analyses": ["rdm"],      # any of "rdm", "template", "decoding" (decoding needs template)
+            "analyses": ["rdm"],      # any of "rdm", "template", "fidelity" (fidelity needs template)
         },
     }
 
@@ -204,13 +204,24 @@ TEMPLATE_TARGET_DEFAULTS = {
     "events": None,
     "mode": "timecourse",
     "window": None,
+    "comparison_sets": ["target"],  # the trial's own exemplar; "related" / "others" are opt-in controls
+    "annotation": {                  # timecourse report markers (mvpa-decoding's timecourse annotation)
+        "trial_start_event": None,   # query anchoring each trial (None: the target events themselves)
+        "annotation_labels": {},     # {display name: [trial_type, ...]} for positions whose event varies
+        "min_frequency": 0.5,        # mark a position only if this fraction of trials has an event there
+        "unlabeled": "(?i)fixation", # regex: positions whose events all match get a line but no label
+        "next_trial": True,          # mark where the next trial starts, when it falls inside the window
+        "lag_seconds": None,         # optional: also draw every marker shifted by this lag (e.g. the HRF peak)
+    },
     "related_level": "category",
     "extra_sets": {},
     "group": {
-        "group_by": [],
-        "comparisons": ["target", "related", "others"],
+        "group_by": [],              # one line / bar per combination of these columns (ignored with overlay)
+        "overlay": None,             # mvpa-decoding syntax: {name: {query..., "color", "line_type", "group"}}
+        "comparisons": None,         # None: every scored set (comparison_sets + extra_sets)
     },
 }
+COMPARISON_SETS = {"target", "related", "others"}
 EXTRA_SET_LEVELS = {"exemplar", "category", "subcategory"}
 # keys of earlier template_rsa versions whose (study-specific) analyses now live in the post-hoc
 # notebooks (_interactive_notebooks/); the validator points there instead of silently ignoring them
@@ -837,3 +848,49 @@ def compute_data_rdm(dataset, rdm_cfg: dict, row_order: list, level: str):
 def rdm_to_frame(rdm, level: str) -> pd.DataFrame:
     rows = list(rdm.pattern_descriptors[level])
     return pd.DataFrame(rdm.get_matrices()[0], index=rows, columns=rows)
+
+
+# =====================================================
+# Overlay conditions (mvpa-decoding's model_conditions.timecourse_decoding.overlay syntax)
+# =====================================================
+
+OVERLAY_STYLE_KEYS = ("color", "line_type", "group")
+OVERLAY_LINESTYLES = ["-", "--", ":", "-."]
+
+
+def overlay_query(entry: dict) -> dict:
+    """An overlay entry without its styling keys: the events query that defines the condition."""
+    return {k: v for k, v in entry.items() if k not in OVERLAY_STYLE_KEYS}
+
+
+def overlay_labels(overlay: dict, df: pd.DataFrame) -> pd.Series:
+    """Each row's overlay condition: the first entry (config order) whose query it matches; NaN if none
+    (those rows are left out of the summaries, as events no overlay entry names)."""
+    out = pd.Series(np.nan, index=df.index, dtype=object)
+    for name, entry in overlay.items():
+        hit = evaluate_query_node(overlay_query(entry), df) & out.isna()
+        out[hit] = name
+    return out
+
+
+def resolve_overlay_styles(overlay: dict) -> dict:
+    """{name: (color, line_type, panel group)} as in mvpa-decoding's generate_report.resolve_overlay_styles:
+    line_type -- an int indexes solid / dashed / dotted / dashdot, a string goes straight to matplotlib,
+    omitted is solid; color -- an int indexes the tab10 palette, a string goes straight to matplotlib,
+    omitted auto-assigns from tab10, counting separately within each line type; group -- entries sharing a
+    value are drawn in their own panel (omitted: one panel)."""
+    import matplotlib.pyplot as plt
+    palette = plt.get_cmap("tab10").colors
+    styles, counters = {}, {}
+    for name, entry in (overlay or {}).items():
+        lt = entry.get("line_type")
+        lt = "-" if lt is None else OVERLAY_LINESTYLES[lt % 4] if isinstance(lt, int) and not isinstance(lt, bool) else lt
+        c = entry.get("color")
+        if c is None:
+            c = palette[counters.get(lt, 0) % len(palette)]
+            counters[lt] = counters.get(lt, 0) + 1
+        elif isinstance(c, int) and not isinstance(c, bool):
+            c = palette[c % len(palette)]
+        styles[name] = (c, lt, entry.get("group"))
+    return styles
+

@@ -13,7 +13,7 @@ Code is split in two:
 
 - **Core pipeline (design-agnostic), two analysis stages:**
   - *template* — [workflows/template_rsa.py](../workflows/template_rsa.py) (subject: category masks, weights, templates saved to disk, template validation) and [workflows/group_template_rsa.py](../workflows/group_template_rsa.py) (validation across subjects)
-  - *decoding* — [workflows/decode_templates.py](../workflows/decode_templates.py) (subject: target events scored against the saved templates) and [workflows/group_decoding.py](../workflows/group_decoding.py) (group raw table, descriptive summaries, comparison-set check)
+  - *fidelity* — [workflows/template_fidelity.py](../workflows/template_fidelity.py) (subject: each target event scored against its own exemplar's saved template; related / others / extra sets opt-in) and [workflows/group_fidelity.py](../workflows/group_fidelity.py) (group raw table, descriptive summaries)
 - **Study-specific post-hoc analyses:** [_interactive_notebooks/kim2020_removal_operations.ipynb](../_interactive_notebooks/kim2020_removal_operations.ipynb) and [_interactive_notebooks/bretton2024_ltm_fidelity.ipynb](../_interactive_notebooks/bretton2024_ltm_fidelity.ipynb), on helpers in [rsa_posthoc_common.py](../_interactive_notebooks/rsa_posthoc_common.py).
 
 ---
@@ -32,12 +32,12 @@ The RDM config (`events.hierarchy` → RDM → `model_rdms`) has no slot for tem
 
 | Change | Where |
 |---|---|
-| New analysis families, selected with `pipeline.analyses: ["template", "decoding"]` (alongside or instead of `"rdm"`): *template* builds and validates the templates, *decoding* scores target events against them | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
+| New analysis families, selected with `pipeline.analyses: ["template", "fidelity"]` (alongside or instead of `"rdm"`): *template* builds and validates the templates, *fidelity* scores each target event against its own exemplar's template (named after the papers' "encoding fidelity" / "representational fidelity"; not a classifier, so not "decoding") | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
 | New `template_rsa` config section: `templates`, `feature_weighting`, named `targets`, per-target `group` | same; validated by `utils/validate_rsa_config.py::validate_template` |
 | Time windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}` | `rsa_common.py::validate_window`, `window_volumes` |
 | Atlas-label ROIs: `{"atlas_pattern", "labels"}` (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid | `rsa_common.py::resolve_roi_mask` (used by both analysis families) |
-| Subject and group stages for each, and common report pages (workflow diagram, template validation with every presentation shown separately, descriptive decoding) | `template_rsa.py`, `decode_templates.py`, `group_template_rsa.py`, `group_decoding.py`, `generate_report.py::template_section`, `decoding_section` |
-| **Core / post-hoc split.** The core stops at a group raw table (`group/decoding/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
+| Subject and group stages for each, and common report pages (workflow diagram, template validation with every presentation shown separately, descriptive fidelity) | `template_rsa.py`, `template_fidelity.py`, `group_template_rsa.py`, `group_fidelity.py`, `generate_report.py::template_section`, `fidelity_section` |
+| **Core / post-hoc split.** The core stops at a group raw table (`group/fidelity/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
 | `extra_sets`: score a trial against the templates named in any events column, at exemplar, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
 
 The config layout deliberately mirrors mvpa-decoding: `templates` ≈ `training`, `targets` ≈ `testing` / `timecourse_decoding`, and `window` uses the same syntax. A lab config can therefore hold both the decoding and the RSA settings for one study.
@@ -111,7 +111,7 @@ $$T_i = \frac{1}{|E_i|}\sum_{e\in E_i} p_{W_\text{tmpl}}(e),\qquad \tilde T_i = 
 
 $\odot$ is the element-wise product. In [B], $|E_i| = 1$: the template is the item's single pre-test exposure.
 
-**Workflow:** `templates.events`, `templates.window` → `template_rsa.py::build_template_sets`. The templates are built from all template runs and saved (`…_templates.npz`) for the decoding stage.
+**Workflow:** `templates.events`, `templates.window` → `template_rsa.py::build_template_sets`. The templates are built from all template runs and saved (`…_templates.npz`) for the fidelity stage.
 
 ### 1.5b Template validation
 
@@ -137,14 +137,18 @@ For a set of items $A$, the score averages Pearson r first and then Fisher-trans
 
 $$S_A(y) = \operatorname{artanh}\!\Big(\tfrac{1}{|A|}\textstyle\sum_{i\in A} r_i(y)\Big)$$
 
-The sets, for a trial whose item is $i^\*$:
+The sets, for a trial whose item is $i^\*$. Only **target** is scored by default; the others are opt-in (`targets.<set>.comparison_sets`, `extra_sets`):
 
-- **target** $= \{i^\*\}$
-- **related** $= \{j\neq i^\*: c(j)=c(i^\*)\}$, other items of the same category
-- **others** $= \{j: c(j)\neq c(i^\*)\}$, items of other categories
+- **target** $= \{i^\*\}$ — the trial's own exemplar: its *template fidelity*
+- **related** (opt-in control) $= \{j\neq i^\*: c(j)=c(i^\*)\}$, other items of the same category
+- **others** (opt-in) $= \{j: c(j)\neq c(i^\*)\}$, items of other categories
+
+Target alone mixes exemplar-specific and category-level information; target − related isolates the exemplar-specific part, which is why [K]'s encoding-fidelity check (Fig. 5a) uses all three.
 - Optional named sets from other event columns (`extra_sets`): $\{j: \ell(j) = e[\text{column}]\}$ for a level $\ell \in$ {exemplar, category, subcategory}. For example, on [K]'s replace trials, every template of the category switched to (`replacement`). The paper tracked the replacement with the category classifier; this is its item-RSA counterpart.
 
-**Workflow:** `targets.<set>.related_level` (category or subcategory), `targets.<set>.extra_sets`, `feature_weighting.weight_target_patterns` → `template_rsa.py::comparison_sets`, `extra_sets`, `score_matrix` (vectorized over all volumes of a run), `TemplateSet.score`.
+Report lines (descriptive only): `targets.<set>.group.overlay` names the conditions to draw, in mvpa-decoding's overlay syntax (an events query per condition plus `color`, `line_type`, `group` for panels); each line averages every trial its query matches, e.g. one line per operation averaged over subcategory. Without it, `group.group_by` crosses the listed columns. Timecourse plots also mark the trial structure from the events table (`targets.<set>.annotation`, mvpa-decoding's `trial_start_event` / `annotation_labels`): each event position most trials share (e.g. image onset, operation cue, the next trial) at its mean start, optionally repeated at `lag_seconds` (e.g. 4.6 s, the template lag) to show where its BOLD response peaks.
+
+**Workflow:** `targets.<set>.comparison_sets` (default `["target"]`), `targets.<set>.related_level` (category or subcategory), `targets.<set>.extra_sets`, `feature_weighting.weight_target_patterns` → `template_rsa.py::comparison_sets`, `extra_sets`, `score_matrix` (vectorized over all volumes of a run), `TemplateSet.score`.
 
 ### 1.7 Group inference
 
@@ -230,7 +234,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 
 The released MATLAB code was read line by line: `rsa_decode_01.m` (GLMs) and `rsa_decode_02_item.m` (templates, localizer validation, study-phase timecourse).
 
-**Templates used for decoding: match.**
+**Templates used for fidelity scoring: match.**
 
 | Step | [K] code | This workflow | |
 |---|---|---|---|
@@ -239,12 +243,12 @@ The released MATLAB code was read line by line: `rsa_decode_01.m` (GLMs) and `rs
 | Per-presentation pattern | Mean of z-scored, lag-shifted volumes; spike volumes excluded | `event_pattern`: mean of the window; censored volumes excluded | ✅ |
 | Template | Mean over runs of (pattern × own item t), inside own category mask | Mean pattern × item t inside own category mask (the same, since the weighting is linear) | ✅ |
 
-**Decoding (study-phase timecourse): match.**
+**Fidelity scoring (study-phase timecourse): match.**
 
 | Step | [K] code | This workflow | |
 |---|---|---|---|
 | Score vs. template j | Study volume inside j's category mask × j's t-map (`ytarg_pat .* xbeta`), `corr2` with template j | `TemplateSet.score` / `score_matrix` with `weight_target_patterns: true` | ✅ |
-| Sets | target = own item; related = other items of the category; others = other categories | `comparison_sets` with `related_level: category` | ✅ |
+| Sets | target = own item; related = other items of the category; others = other categories | `comparison_sets: ["target"]` by default (the notebook's timecourse analysis uses only target); `["target", "related", "others"]` reproduces all three | ✅ |
 | Aggregation | Mean r over the set's items, then Fisher z, per TR; spike TRs skipped | Same; censored volumes give no score | ✅ |
 
 The study runs are separate from the localizer runs, so this is already a held-out test.
@@ -257,7 +261,7 @@ The study runs are separate from the localizer runs, so this is already a held-o
 | Earlier leave-one-presentation-out (removed) | 0.258 | 0.114 | 0.027 |
 | `cv` (feature selection refit per fold) | 0.162 | 0.114 | 0.032 |
 
-In the published method, feature selection sees every presentation, including the one being validated. The `cv` method shows how much that matters: target drops by about 0.1 when the masks and weights are refit without the held-out run. Decoding of separate runs is unaffected.
+In the published method, feature selection sees every presentation, including the one being validated. The `cv` method shows how much that matters: target drops by about 0.1 when the masks and weights are refit without the held-out run. Fidelity of separate runs is unaffected.
 
 ### Bretton et al. (2024)
 
@@ -332,20 +336,20 @@ In the published method, feature selection sees every presentation, including th
 python workflows/run_pipeline.py --config examples/config-kim2020-ncomms.example.json
 ```
 
-The command runs the event table, validation, the template stage (templates + validation) and the decoding stage for every subject, the group stages, and the report. Then open the study's notebook in `_interactive_notebooks/`, set its configuration cell, and run all cells. The stages can also be run separately:
+The command runs the event table, validation, the template stage (templates + validation) and the fidelity stage for every subject, the group stages, and the report. Then open the study's notebook in `_interactive_notebooks/`, set its configuration cell, and run all cells. The stages can also be run separately:
 
 ```bash
 python workflows/template_rsa.py --config CONFIG --subject 01
-python workflows/decode_templates.py --config CONFIG --subject 01
+python workflows/template_fidelity.py --config CONFIG --subject 01
 python workflows/group_template_rsa.py --config CONFIG
-python workflows/group_decoding.py --config CONFIG
+python workflows/group_fidelity.py --config CONFIG
 python workflows/generate_report.py --config CONFIG
 ```
 
 Outputs:
 
 - `<output_dir>/sub-<s>/template_rsa/`: saved templates, category masks, feature-selection QC, template validation (summary and every presentation pair), cv folds
-- `<output_dir>/sub-<s>/decoding/`: trial-level scores per target set
+- `<output_dir>/sub-<s>/fidelity/`: trial-level scores per target set
 - `<output_dir>/group/template_rsa/`: validation per subject and the presentation-level matrices averaged over subjects
-- `<output_dir>/group/decoding/`: `raw/` (the notebooks' input), subject means, summaries, comparison-set tests, figures
+- `<output_dir>/group/fidelity/`: `raw/` (the notebooks' input), subject means, summaries, comparison-set tests, figures
 - `<output_dir>/posthoc/<study>/`: the notebook's `stats_and_figures.pdf`, one CSV per table, `run_settings.json`

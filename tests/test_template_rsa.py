@@ -3,15 +3,17 @@ selection, template validation, generic comparison sets (incl. extra_sets), the 
 and the config checks. Study-specific statistics are tested in test_posthoc_common.py and by
 executing the notebooks (test_notebooks.py)."""
 
+import os
+
 import pandas as pd
 import pytest
 
 from tests.synthetic_lab import make_config, make_dataset, q
 from utils.validate_rsa_config import validate
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
-from workflows.decode_templates import decode_subject
+from workflows.template_fidelity import fidelity_subject
 from workflows.generate_report import generate_report
-from workflows.group_decoding import group_decoding
+from workflows.group_fidelity import group_fidelity
 from workflows.group_template_rsa import group_template_rsa
 from workflows.template_rsa import template_rsa_subject
 
@@ -27,11 +29,13 @@ def run(tmp_path_factory):
     errors, _ = validate(cfg, df)
     assert errors == [], errors
     out = cfg["pipeline"]["output_dir"]
+    os.makedirs(os.path.dirname(cfg["event_extraction"]["output_file"]), exist_ok=True)
+    df.to_csv(cfg["event_extraction"]["output_file"], index=False)
     for sub in SUBJECTS:
         template_rsa_subject(cfg, df, sub, out)
-        decode_subject(cfg, df, sub, out)
+        fidelity_subject(cfg, df, sub, out)
     group_template_rsa(cfg, out)
-    group_decoding(cfg, out)
+    group_fidelity(cfg, out)
     return root, cfg, df, out
 
 
@@ -40,7 +44,7 @@ def group_file(out, name, stage="template_rsa"):
 
 
 def raw_file(out, target_set):
-    return pd.read_csv(f"{out}/group/decoding/raw/roi-vvs_target-{target_set}_scores.csv",
+    return pd.read_csv(f"{out}/group/fidelity/raw/roi-vvs_target-{target_set}_scores.csv",
                        dtype={"subject": str}, low_memory=False)
 
 
@@ -63,10 +67,10 @@ def test_validation_and_post_test_rank_target_related_others(run):
     # category signal from the synthetic patterns: only the same-item pairs stand out.
     kim = val[(val["level"] == "exemplar") & (val["method"] == "kim2020")].groupby("comparison")["z"].mean()
     assert kim["target"] > kim["related"] + 0.5 and kim["target"] > kim["others"] + 0.5
-    post = group_file(out, "target-posttest_subject-means.csv", "decoding")
+    post = group_file(out, "target-posttest_subject-means.csv", "fidelity")
     p = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert p["target"] > p["related"] > p["others"]
-    tests = group_file(out, "target-posttest_comparison-tests.csv", "decoding")
+    tests = group_file(out, "target-posttest_comparison-tests.csv", "fidelity")
     assert (tests.loc[tests["contrast"] == "target - others", "t"] > 0).all()
 
 
@@ -90,6 +94,64 @@ def test_replacement_set_only_on_replace_trials_and_tracks_the_new_category(run)
     assert target["maintain"] > target["suppress"]
 
 
+def test_fidelity_scores_only_the_trials_own_exemplar_by_default(run):
+    """comparison_sets defaults to ["target"]: no related / others rows unless opted in; extra_sets still scored."""
+    _, _, _, out = run
+    tc = raw_file(out, "studytimecourse")
+    assert set(tc["comparison"]) == {"target", "replacement"}
+    assert (tc.loc[tc["comparison"] == "target", "n_exemplars"] == 1).all()
+    ef = raw_file(out, "encodingfidelity")
+    assert set(ef["comparison"]) == {"target", "related", "others"}
+
+
+def test_overlay_defines_lines_colors_and_drops_unnamed_events(tmp_path):
+    """group.overlay (mvpa-decoding syntax): one line / bar per named condition in its color, averaged over
+    everything else (here: subcategory); events no entry names are left out."""
+    from utils.rsa_common import resolve_overlay_styles
+    make_dataset(tmp_path, ("1",))
+    cfg, user = make_config(tmp_path)
+    overlay = {"maintain": {**q("operation", "maintain"), "color": "green"},
+               "suppress": {**q("operation", "suppress"), "color": 3, "line_type": 1, "group": "removal"}}
+    for spec in cfg["template_rsa"]["targets"].values():
+        spec["group"]["overlay"] = overlay
+    df = build_master_spreadsheet(cfg)
+    assert validate(cfg, df)[0] == []
+    out = cfg["pipeline"]["output_dir"]
+    template_rsa_subject(cfg, df, "1", out)
+    fidelity_subject(cfg, df, "1", out)
+    group_fidelity(cfg, out)
+    subj = pd.read_csv(f"{out}/group/fidelity/roi-vvs_target-encodingfidelity_subject-means.csv")
+    assert set(subj["group"]) == {"maintain", "suppress"}  # replace_category trials are not named
+    styles = resolve_overlay_styles(overlay)
+    assert styles["maintain"] == ("green", "-", None) and styles["suppress"][1:] == ("--", "removal")
+    import pypdfium2 as pdfium
+    assert len(pdfium.PdfDocument(generate_report(cfg, out, subject="1"))) >= 4
+
+
+def test_timecourse_markers_show_trial_start_and_events(run):
+    """Trial-structure markers (mvpa-decoding style) from the events table: the trial start (the target event
+    itself, at 0 s) and the next trial when it falls inside the window; written by the group stage."""
+    _, cfg, df, out = run
+    mk = pd.read_csv(f"{out}/group/fidelity/roi-vvs_target-studytimecourse_event-markers.csv").fillna({"label": ""})
+    first = mk.iloc[0]
+    assert first["label"] == "stimulus" and abs(first["start_s"]) < 1e-9 and first["frequency"] == 1.0
+    from workflows.group_fidelity import compute_event_markers
+    from workflows.template_rsa import target_specs
+    spec = target_specs(cfg)["study_timecourse"]
+    spec["annotation"]["annotation_labels"] = {"trial": ["stimulus"]}
+    spec["annotation"]["next_trial"] = False
+    assert all(m["label"] != "next trial" for m in compute_event_markers(df, spec))
+
+
+def test_unscored_group_comparison_is_rejected(run):
+    root, _, df, _ = run
+    _, user = make_config(root)
+    user["template_rsa"]["targets"]["study_timecourse"]["group"]["comparisons"] = ["target", "related"]
+    from utils.rsa_common import default_config, merge_with_defaults
+    errors, _ = validate(merge_with_defaults(user, default_config()), df)
+    assert any("not scored" in e for e in errors)
+
+
 def test_template_exemplars_are_selected_by_the_template_query(tmp_path):
     """Selecting a subset of exemplars is done in templates.events (e.g. a trial_type regex such as
     'new_.*'); unselected template-phase events are modeled as nuisance regressors, get no template,
@@ -101,8 +163,8 @@ def test_template_exemplars_are_selected_by_the_template_query(tmp_path):
                    "end": {"reference": "offset_end", "offset_seconds": 4.0}}})
     df = build_master_spreadsheet(cfg)
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
-    decode_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
-    scores = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/decoding/sub-1_roi-vvs_target-post_test_scores.csv")
+    fidelity_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
+    scores = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/fidelity/sub-1_roi-vvs_target-post_test_scores.csv")
     assert set(scores["stimulus"].str.rstrip("0123456789")) == {"actor", "beach"}
     assert scores.groupby(["level", "comparison"])["n_exemplars"].max().loc[("exemplar", "others")] == 3  # 3 beach exemplars only
 
@@ -116,9 +178,9 @@ def test_single_event_templates_skip_validation(tmp_path):
     errors, warnings = validate(cfg, df)
     assert errors == [] and any("single run" in w for w in warnings) and any("cv needs" in w for w in warnings)
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
-    decode_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
+    fidelity_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
     assert not (tmp_path / "out" / "sub-1" / "template_rsa" / "sub-1_roi-vvs_template-validation.csv").exists()
-    post = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/decoding/sub-1_roi-vvs_target-post_test_scores.csv")
+    post = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/fidelity/sub-1_roi-vvs_target-post_test_scores.csv")
     m = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert m["target"] > m["others"]
 

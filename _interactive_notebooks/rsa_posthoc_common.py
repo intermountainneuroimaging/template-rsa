@@ -3,7 +3,7 @@
 Everything the post-hoc notebooks share, so each notebook holds only its own study's analysis.
 
 The core pipeline (workflows/run_pipeline.py) ends with one group-level raw table per ROI and
-target set -- <output_dir>/group/decoding/raw/roi-<roi>_target-<set>_scores.csv, one row per
+target set -- <output_dir>/group/fidelity/raw/roi-<roi>_target-<set>_scores.csv, one row per
 subject x event [x volume] x weighting level x comparison set, carrying every events.tsv column.
 The notebooks start from that table; nothing here knows about any particular study.
 
@@ -67,7 +67,7 @@ def load_config(path: str) -> dict:
 
 
 def raw_scores_path(cfg: dict, roi: str, target_set: str) -> str:
-    return os.path.join(cfg["pipeline"]["output_dir"], "group", "decoding", "raw",
+    return os.path.join(cfg["pipeline"]["output_dir"], "group", "fidelity", "raw",
                         f"roi-{roi}_target-{safe_name(target_set)}_scores.csv")
 
 
@@ -75,7 +75,7 @@ def load_scores(cfg: dict, roi: str, target_set: str, level: str = None) -> pd.D
     """The group raw table for one ROI and target set (optionally one weighting level)."""
     path = raw_scores_path(cfg, roi, target_set)
     if not os.path.isfile(path):
-        raise FileNotFoundError(f"{path} not found -- run the core pipeline (template, decode and decode_group stages) first")
+        raise FileNotFoundError(f"{path} not found -- run the core pipeline (template, fidelity and fidelity_group stages) first")
     df = pd.read_csv(path, dtype={"subject": str, "run": str, "run_id": str}, low_memory=False)
     return df[df["level"] == level].reset_index(drop=True) if level else df
 

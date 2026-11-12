@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Group stage for the template stage (template_rsa.py): template validation across subjects, per ROI.
-Decoding results have their own group stage (group_decoding.py).
+Fidelity results have their own group stage (group_fidelity.py).
 
   validation     per subject x validation method x weighting level x comparison set: the mean z over the
                  subject's presentations (and, for cv, folds)

@@ -159,57 +159,112 @@ def plot_weights(weights: pd.DataFrame, title: str, out_path: str):
     _save(fig, out_path)
 
 
-def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, title: str):
-    """Lines = groups (mean +- SEM over subjects) of one comparison set over time from the window start."""
+def overlay_panels(styles: dict) -> list:
+    """Panel groups in config order ([None]: one panel) for overlay styles {name: (color, line_type, group)}."""
+    groups = list(dict.fromkeys(st[2] for st in (styles or {}).values()))
+    return groups if styles and any(gr is not None for gr in groups) else [None]
+
+
+def ordered_groups(present, styles: dict, panel=None) -> list:
+    """The lines / bars to draw: overlay entries in config order (only those in `panel`), else as found."""
+    if not styles:
+        return list(dict.fromkeys(present))
+    return [n for n, st in styles.items() if n in set(present) and (panel is None or st[2] == panel)]
+
+
+def draw_event_markers(ax, markers: list, lag_seconds=None, fontsize: float = 6.5):
+    """Trial-structure markers (group_fidelity.compute_event_markers), as on mvpa-decoding's timecourse page:
+    a dotted gray line at each event's mean start plus a rotated label hugging it from the top of the axes
+    ("(variable timing)" when the start jitters by >= half a TR). lag_seconds: the same markers again,
+    shifted by the lag, as faint dashed lines labeled "+lag" (where that event's BOLD response peaks)."""
+    if not markers:
+        return
+    ylim = ax.get_ylim()
+    for m in markers:
+        label = m["label"] + (" (variable timing)" if m.get("variable") and m["label"] else "")
+        ax.axvline(m["start_s"], color="gray", ls=":", lw=0.8, zorder=0)
+        if label:
+            ax.text(m["start_s"], ylim[1], label, fontsize=fontsize, ha="right", va="top", rotation=90,
+                    rotation_mode="anchor", color="0.35")
+        if lag_seconds and m["label"]:
+            x = m["start_s"] + lag_seconds
+            if x <= ax.get_xlim()[1]:
+                ax.axvline(x, color="0.75", ls="--", lw=0.6, zorder=0)
+                ax.text(x, ylim[0], f"{m['label']} +{lag_seconds:g} s", fontsize=fontsize - 1, ha="left",
+                        va="bottom", rotation=90, rotation_mode="anchor", color="0.6")
+    ax.set_ylim(ylim)
+
+
+def draw_template_timecourse(ax, summary: pd.DataFrame, comparison: str, title: str, styles: dict = None,
+                             panel=None, markers: list = None, lag_seconds=None):
+    """Lines = groups (mean +- SEM over subjects) of one comparison set over time from the window start.
+    styles: resolve_overlay_styles output -- each overlay condition in its configured color / line type."""
     part = summary[summary["comparison"] == comparison]
-    for grp, gpart in part.groupby("group"):
-        gpart = gpart.sort_values("time_s")
-        ax.plot(gpart["time_s"], gpart["mean"], label=grp, lw=1.5)
-        ax.fill_between(gpart["time_s"], gpart["mean"] - gpart["sem"], gpart["mean"] + gpart["sem"], alpha=0.25)
+    for grp in ordered_groups(part["group"], styles, panel):
+        gpart = part[part["group"] == grp].sort_values("time_s")
+        color, ls = (styles[grp][0], styles[grp][1]) if styles else (None, "-")
+        line, = ax.plot(gpart["time_s"], gpart["mean"], label=grp, lw=1.5, color=color, ls=ls)
+        ax.fill_between(gpart["time_s"], gpart["mean"] - gpart["sem"], gpart["mean"] + gpart["sem"], alpha=0.2,
+                        color=line.get_color(), lw=0)
     ax.axhline(0, color="k", lw=0.8)
+    draw_event_markers(ax, markers, lag_seconds)
     ax.set_xlabel("time from window start (s)", fontsize=8)
     ax.set_ylabel("similarity (Fisher z)", fontsize=8)
-    ax.set_title(title, fontsize=9)
+    ax.set_title(title + (f" | {panel}" if panel is not None else ""), fontsize=9)
     ax.legend(fontsize=7, frameon=False)
 
 
-def plot_template_timecourse(summary: pd.DataFrame, g: dict, title: str, out_path: str):
+def plot_template_timecourse(summary: pd.DataFrame, g: dict, title: str, out_path: str, styles: dict = None,
+                             markers: list = None, lag_seconds=None):
     levels = list(dict.fromkeys(summary["level"]))
     comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
-    fig, axes = plt.subplots(len(levels), len(comps), squeeze=False, figsize=(3.6 * len(comps), 2.8 * len(levels)))
-    for i, level in enumerate(levels):
+    panels = overlay_panels(styles)
+    rows = [(level, panel) for level in levels for panel in panels]
+    fig, axes = plt.subplots(len(rows), len(comps), squeeze=False, figsize=(3.8 * len(comps), 2.8 * len(rows)))
+    for i, (level, panel) in enumerate(rows):
         for j, comp in enumerate(comps):
-            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}")
+            draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}",
+                                     styles, panel, markers, lag_seconds)
     fig.suptitle(title, fontsize=11)
     _save(fig, out_path)
 
 
-def draw_template_bars(ax, subj: pd.DataFrame, comparisons: list, title: str):
-    """Bars = group x comparison means (+- SEM over subjects), dots = subjects."""
-    groups = list(dict.fromkeys(subj["group"]))
-    width = 0.8 / max(len(comparisons), 1)
-    for j, comp in enumerate(comparisons):
-        for i, grp in enumerate(groups):
-            vals = subj[(subj["group"] == grp) & (subj["comparison"] == comp)]["z"].dropna()
+def draw_template_bars(ax, subj: pd.DataFrame, comparisons: list, title: str, styles: dict = None):
+    """Bars = means (+- SEM over subjects), dots = subjects. Without overlay styles: groups on the x axis,
+    one color per comparison set. With them: comparison sets on the x axis, one bar per overlay condition
+    in its configured color (the same colors as the timecourse lines)."""
+    if styles:
+        conds = ordered_groups(subj["group"], styles)
+        outer, inner = comparisons, conds
+        color_of = {c: styles[c][0] for c in conds}
+        key = lambda o, i: (subj["comparison"] == o) & (subj["group"] == i)  # noqa: E731
+    else:
+        outer, inner = list(dict.fromkeys(subj["group"])), comparisons
+        color_of = {c: f"C{j}" for j, c in enumerate(comparisons)}
+        key = lambda o, i: (subj["group"] == o) & (subj["comparison"] == i)  # noqa: E731
+    width = 0.8 / max(len(inner), 1)
+    for i, o in enumerate(outer):
+        for j, inn in enumerate(inner):
+            vals = subj[key(o, inn)]["z"].dropna()
             if vals.empty:
                 continue
-            x = i + (j - (len(comparisons) - 1) / 2) * width
+            x = i + (j - (len(inner) - 1) / 2) * width
             ax.bar(x, vals.mean(), width=width * 0.9, yerr=vals.sem() if len(vals) > 1 else None, capsize=2,
-                   color=f"C{j}", label=comp if i == 0 else None)
+                   color=color_of[inn], label=inn if i == 0 else None)
             ax.scatter(np.full(len(vals), x), vals, s=6, color="k", zorder=3)
     ax.axhline(0, color="k", lw=0.8)
-    ax.set_xticks(range(len(groups)), groups, rotation=30, ha="right", fontsize=7)
+    ax.set_xticks(range(len(outer)), outer, rotation=0 if styles else 30, ha="center" if styles else "right", fontsize=7)
     ax.set_ylabel("similarity (Fisher z)", fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.legend(fontsize=7, frameon=False)
 
 
-def plot_template_bars(subj: pd.DataFrame, g: dict, title: str, out_path: str):
+def plot_template_bars(subj: pd.DataFrame, g: dict, title: str, out_path: str, styles: dict = None):
     levels = list(dict.fromkeys(subj["level"]))
     comps = [c for c in g["comparisons"] if c in set(subj["comparison"])]
     fig, axes = plt.subplots(1, len(levels), squeeze=False, figsize=(1.5 + 0.9 * subj["group"].nunique() * len(levels) + 2, 3.8))
     for ax, level in zip(axes.flat, levels):
-        draw_template_bars(ax, subj[subj["level"] == level], comps, f"{level}-weighted templates")
+        draw_template_bars(ax, subj[subj["level"] == level], comps, f"{level}-weighted templates", styles)
     fig.suptitle(title, fontsize=11)
     _save(fig, out_path)
 
@@ -220,15 +275,15 @@ def plot_template_bars(subj: pd.DataFrame, g: dict, title: str, out_path: str):
 
 def draw_workflow(fig, boxes: dict, title: str = "Analysis workflow"):
     """A methods diagram on a report page. boxes: {key: (heading, [lines])} for any of
-    inputs, preprocessing, rdm, template, validation, decoding, group (absent keys are skipped).
-    The rdm branch sits on the left and the template -> validation -> decoding branch on the right
+    inputs, preprocessing, rdm, template, validation, fidelity, group (absent keys are skipped).
+    The rdm branch sits on the left and the template -> validation -> fidelity branch on the right
     (each full width when it is the only branch)."""
     import textwrap
     from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
     line_h, pad, gap, size = 0.0122, 0.012, 0.022, 7.2
     colors = {"inputs": "#eef1f5", "preprocessing": "#eef1f5", "rdm": "#e6f0fa", "template": "#fbeee4",
-              "validation": "#fbeee4", "decoding": "#e8f5ee", "group": "#eef1f5"}
+              "validation": "#fbeee4", "fidelity": "#e8f5ee", "group": "#eef1f5"}
     fig.text(0.07, 0.965, title, fontsize=14, weight="bold", va="top")
 
     def box(key, x, y_top, w):
@@ -268,7 +323,7 @@ def draw_workflow(fig, boxes: dict, title: str = "Analysis workflow"):
         bottoms.append(box("rdm", xs["rdm"], y, col_w))
     if "template" in boxes:
         x, yy = xs["template"], y
-        for key in ("template", "validation", "decoding"):
+        for key in ("template", "validation", "fidelity"):
             if key not in boxes:
                 continue
             if key != "template":
