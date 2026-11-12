@@ -315,7 +315,17 @@ def safe_name(name) -> str:
 
 
 def parse_bids_entities(filename: str) -> dict:
-    return {m.group("key"): m.group("val") for m in BIDS_ENTITY_RE.finditer(Path(filename).name)}
+    """Entities from the filename; sub / ses missing from the name are taken from the enclosing
+    sub-<label> / ses-<label> folders (e.g. Flywheel-style names like
+    sub-090/ses-A1/func/func-bold_task-loc_dir-pa_run-01_desc-rsainputs_events.tsv)."""
+    path = Path(filename)
+    entities = {m.group("key"): m.group("val") for m in BIDS_ENTITY_RE.finditer(path.name)}
+    for key in ("sub", "ses"):
+        if key not in entities:
+            folder = next((p for p in reversed(path.parent.parts) if re.fullmatch(rf"{key}-[^_/]+", p)), None)
+            if folder:
+                entities[key] = folder.split("-", 1)[1]
+    return entities
 
 
 def read_master_spreadsheet(path: str) -> pd.DataFrame:

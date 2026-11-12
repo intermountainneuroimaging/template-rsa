@@ -13,6 +13,7 @@ examples/clearvale/
 ├── scripts/
 │   ├── fetch_bold.py                # Flywheel -> only the BOLD runs, motion files and aparc+aseg a subject needs
 │   ├── make_events.py               # PsychoPy stim.csv -> BIDS events.tsv (all sessions with --all)
+│   ├── export_events.py             # events.tsv -> Flywheel-style names, zip for the HPC, Flywheel upload
 │   ├── audit_stim.py                # audit of every session's PsychoPy logs (feeds analysis_deviations.md)
 │   ├── make_confounds.py            # motion parameters + framewise displacement for the GLMs / censoring
 │   ├── make_brain_mask.py           # aparc+aseg brain mask on the BOLD grid (traditional RDM config only)
@@ -47,13 +48,30 @@ data/cv-bids/
 └── out/kim2020_denoised/ ...                                # pipeline outputs
 ```
 
+### Events on Flywheel and the HPC
+
+The events from `make_events.py` are also on Flywheel, in each BOLD acquisition, under Flywheel-style
+names: `func-bold_task-loc_dir-pa_run-01_desc-rsainputs_events.tsv` (next to the original
+`desc-stimulus` / `desc-blocks` files). For the HPC the same files are zipped under BIDS names, in
+their folders (`sub-090/ses-A1/func/sub-090_ses-A1_task-loc_dir-pa_run-01_desc-rsainputs_events.tsv`).
+`export_events.py` makes both (a dry run on Flywheel unless `--upload`); unzip into the cv-bids folder:
+
+```bash
+unzip cv-events-rsainputs.zip -d data/cv-bids
+```
+
+These match the configs' `events_glob` as they are. Keep only one copy of each run's events under
+cv-bids (these or the plain `make_events.py` output), or the run is read twice. (Flywheel-style names
+without `sub-` / `ses-` also work: the pipeline then takes subject and session from the folders.)
+
 ## Run order
 
 Flywheel steps use the saved CLI login (`fw login` once) or, in notebooks 01 and 03, a hidden prompt; no key is ever stored in a file.
 
 1. **Run lengths and stimulus files (once, all subjects):** notebooks 04 and 03.
 2. **Events (once, all sessions):** `python examples/clearvale/scripts/make_events.py --all`, then
-   `python examples/clearvale/scripts/audit_stim.py` to refresh the audit.
+   `python examples/clearvale/scripts/audit_stim.py` to refresh the audit, and
+   `python examples/clearvale/scripts/export_events.py --upload` to put them on Flywheel and zip them.
 3. **Per subject:**
    ```bash
    python examples/clearvale/scripts/fetch_bold.py --subject 090      # needs the Flywheel SDK

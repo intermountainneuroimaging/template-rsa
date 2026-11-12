@@ -144,3 +144,13 @@ def test_weighted_model_validation():
     cfg["comparison"]["method"] = "tau-a"
     errs = validate_weighted_models(cfg)
     assert any("not in model_rdms" in e for e in errs) and any("only supports" in e for e in errs)
+
+
+def test_parse_bids_entities_takes_sub_ses_from_folders():
+    from utils.rsa_common import parse_bids_entities
+    flywheel_style = parse_bids_entities(
+        "root/sub-090/ses-A1/func/func-bold_task-loc_dir-pa_run-01_desc-rsainputs_events.tsv")
+    assert flywheel_style["sub"] == "090" and flywheel_style["ses"] == "A1"
+    assert flywheel_style["task"] == "loc" and flywheel_style["run"] == "01"
+    bids = parse_bids_entities("root/sub-999/ses-Z9/func/sub-090_ses-A1_task-loc_run-01_events.tsv")
+    assert bids["sub"] == "090" and bids["ses"] == "A1"  # the filename wins over the folders
