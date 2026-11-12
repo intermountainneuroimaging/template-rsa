@@ -20,6 +20,7 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import sys
 
 import nibabel as nib
@@ -45,10 +46,14 @@ def is_excluded_trial_type(trial_type) -> bool:
     return any(s in tt for s in EXCLUDED_TRIAL_TYPE_SUBSTRINGS)
 
 
+def bold_pattern(entities: dict, bold_glob: str) -> str:
+    """bold_glob with its placeholders filled from the events file's entities: {subject} / {session} /
+    {task} / {run}, and any entity by its BIDS key ({dir}, {acq}, {sub}, {ses}, ...)."""
+    return format_pattern(bold_glob, **{**entities, "subject": entities["sub"], "session": entities.get("ses")})
+
+
 def find_bold_file(derivatives_root: str, entities: dict, bold_glob: str):
-    pattern = format_pattern(bold_glob, subject=entities["sub"], session=entities.get("ses"),
-                             task=entities["task"], run=entities["run"])
-    return sorted(glob.glob(os.path.join(derivatives_root, pattern), recursive=True))
+    return sorted(glob.glob(os.path.join(derivatives_root, bold_pattern(entities, bold_glob)), recursive=True))
 
 
 def process_events_file(events_path: str, derivatives_root: str, bold_glob: str) -> pd.DataFrame:
@@ -62,7 +67,12 @@ def process_events_file(events_path: str, derivatives_root: str, bold_glob: str)
     matches = find_bold_file(derivatives_root, entities, bold_glob)
     if len(matches) != 1:
         what = "no matching BOLD file" if not matches else f"{len(matches)} ambiguous BOLD matches"
-        print(f"  (!) skipping {events_path}: {what} for bold_glob={bold_glob!r}")
+        searched = os.path.join(derivatives_root, bold_pattern(entities, bold_glob))
+        unfilled = re.findall(r"\{(\w+)\}", searched)
+        if unfilled:
+            what += (f" (placeholder(s) {unfilled} are not entities of the events file name; "
+                     f"it has {sorted(entities)})")
+        print(f"  (!) skipping {events_path}: {what}; searched {searched}")
         for m in matches:
             print(f"      {m}")
         return None

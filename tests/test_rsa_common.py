@@ -154,3 +154,10 @@ def test_parse_bids_entities_takes_sub_ses_from_folders():
     assert flywheel_style["task"] == "loc" and flywheel_style["run"] == "01"
     bids = parse_bids_entities("root/sub-999/ses-Z9/func/sub-090_ses-A1_task-loc_run-01_events.tsv")
     assert bids["sub"] == "090" and bids["ses"] == "A1"  # the filename wins over the folders
+
+
+def test_bold_pattern_fills_any_events_entity():
+    from workflows.generate_master_spreadsheet import bold_pattern
+    entities = {"sub": "090", "ses": "A1", "task": "loc", "dir": "pa", "run": "01", "desc": "rsainputs"}
+    glob = "sub-{subject}/ses-{session}/func/sub-{sub}_ses-{ses}_task-{task}_dir-{dir}_run-{run}_bold.nii.gz"
+    assert bold_pattern(entities, glob) == "sub-090/ses-A1/func/sub-090_ses-A1_task-loc_dir-pa_run-01_bold.nii.gz"

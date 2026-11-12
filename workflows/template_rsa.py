@@ -544,7 +544,13 @@ def template_rsa_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: 
     sub_df = df[df["subject"] == subject].copy()
     tmpl_events = select(sub_df, tr_cfg["templates"]["events"])
     if tmpl_events.empty:
-        raise SystemExit(f"sub-{subject}: no template events (template_rsa.templates.events)")
+        if sub_df.empty:
+            have = "the subject is not in the master spreadsheet at all"
+        else:
+            have = ("the master spreadsheet has only these runs for the subject: " +
+                    ", ".join(sorted(sub_df["run_id"].astype(str).unique())))
+        raise SystemExit(f"sub-{subject}: no template events (template_rsa.templates.events); {have}. Runs whose "
+                         "BOLD file was not found are left out of the spreadsheet (see stage 1's '(!) skipping' lines).")
     items = template_items(cfg, tmpl_events)
     needed = set(tmpl_events["boldfile"])
     cm_events = tr_cfg["feature_weighting"]["category_mask"].get("events")
