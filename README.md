@@ -90,7 +90,7 @@ On the cluster (SLURM; the job settings follow mvpa-decoding: `--account=ucb-gen
 ```bash
 bash slurm/0_submit_rsa_pipeline.sh CONFIG               # all three stages, chained
 bash slurm/0_submit_rsa_pipeline.sh CONFIG 090,091       # group stages limited to these subjects
-sbatch slurm/2_batch_run_rsa_workflow.sh CONFIG          # or one stage on its own, from the repo root
+sbatch slurm/2_batch_run_rsa_workflow.sh CONFIG          # or one stage on its own
 ```
 
 | Script | Job |
@@ -101,9 +101,12 @@ sbatch slurm/2_batch_run_rsa_workflow.sh CONFIG          # or one stage on its o
 
 The subjects are `pipeline.subjects`, or every `sub-*` folder under `event_extraction.derivatives_root`
 when that is not set; `0_submit` sizes the array to match. The jobs activate the conda environment
-`$RSA_CONDA_ENV` (default `incenv`), which needs `requirements.txt` installed, and log to `<repo>/logs/`.
-A stage submitted on its own finds the repo from `pipeline.scripts_dir` in the config, else from the
-directory `sbatch` was run in.
+`$RSA_CONDA_ENV` (default `incenv`) and log to `<repo>/logs/`. betaestimation does not need to be
+installed in that environment: the jobs put a clone next to this repo (`<parent>/betaestimation`, or
+`$BETAESTIMATION_DIR`) on `PYTHONPATH`, and stop with the import error if the environment lacks a
+package (`pip install -r requirements.txt`). A stage submitted on its own finds the repo from
+`pipeline.scripts_dir` in the config, else from the directory `sbatch` was run in (the repo or its
+`slurm/` folder).
 
 Relative paths in the config are resolved against the directory you run from (the repo root).
 

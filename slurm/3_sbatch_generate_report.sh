@@ -52,13 +52,17 @@ import json, sys
 print(json.load(open(sys.argv[1])).get('pipeline', {}).get('scripts_dir') or '')
 " "$CONFIG_FILE")
 SCRIPTS_DIR="${SCRIPTS_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
+if [ ! -f "$SCRIPTS_DIR/workflows/run_pipeline.py" ] && [ -f "$SCRIPTS_DIR/../workflows/run_pipeline.py" ]; then
+    SCRIPTS_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"   # sbatch'd from <repo>/slurm
+fi
 if [ ! -f "$SCRIPTS_DIR/workflows/run_pipeline.py" ]; then
-    echo "$(basename "$0"): $SCRIPTS_DIR is not the rsaworkflow repo -- set pipeline.scripts_dir in $CONFIG_FILE or sbatch from the repo root" >&2
+    echo "$(basename "$0"): $SCRIPTS_DIR is not the rsaworkflow repo -- set pipeline.scripts_dir in $CONFIG_FILE or sbatch from the repo or its slurm/ folder" >&2
     exit 1
 fi
 export SCRIPTS_DIR
 source "$SCRIPTS_DIR/slurm/resolve_pipeline_config.sh"
 cd "$SCRIPTS_DIR"   # relative paths in the config are relative to the repo root
+check_python_env
 
 # --subject flags for the group stages, from the optional subject list
 SUBJECT_ARGS=()

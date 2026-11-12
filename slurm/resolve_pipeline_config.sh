@@ -82,3 +82,21 @@ unset _pipeline_vars
 
 # true if pipeline.analyses includes $1
 has_analysis() { [[ " $ANALYSES " == *" $1 "* ]]; }
+
+# betaestimation (the shared GLM / nuisance package): use the clone next to this repo
+# (<parent>/betaestimation, or $BETAESTIMATION_DIR) when there is one, so it need not be pip-installed
+# into the conda environment. It is put first on PYTHONPATH, so it wins over an installed copy.
+BETAESTIMATION_DIR="${BETAESTIMATION_DIR:-$(dirname "$SCRIPTS_DIR")/betaestimation}"
+if [ -f "$BETAESTIMATION_DIR/betaestimation/__init__.py" ]; then
+    export PYTHONPATH="$BETAESTIMATION_DIR${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+# fail early, with the import error, if the active python cannot load the pipeline's dependencies
+check_python_env() {
+    if ! ( cd "$SCRIPTS_DIR" && python -c "import utils.rsa_common" ); then
+        echo "$(basename "$0"): python ($(command -v python)) cannot import the pipeline (see the error above)." >&2
+        echo "  betaestimation: clone it next to this repo ($BETAESTIMATION_DIR) or set BETAESTIMATION_DIR;" >&2
+        echo "  other packages: pip install -r $SCRIPTS_DIR/requirements.txt in the conda env (\$RSA_CONDA_ENV)." >&2
+        exit 1
+    fi
+}
