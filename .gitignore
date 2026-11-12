@@ -1,8 +1,22 @@
+# data and analysis outputs never go in the repo (symlink data/cv-bids etc. on each machine)
 data
 data/
 out/
+*.nii
+*.nii.gz
+*.npz
 slurm/logs/
+
+# Python / Jupyter
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# editors / OS
 .DS_Store
+.vscode/
+.idea/

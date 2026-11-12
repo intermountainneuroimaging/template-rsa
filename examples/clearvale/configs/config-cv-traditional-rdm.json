@@ -1,0 +1,107 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "TRADITIONAL RDM comparison for the template RSA (config-cv-kim2020-denoised.json): same events, BOLD, VVS ROI, confounds and censoring, but no category masks and no exemplar weights. Localizer only (item_filter task == loc; WM runs have no items and are skipped). One GLM per run with each image as its own regressor (each image is shown once per run), t maps; fixation is the implicit baseline. RDM rows are the 90 images; correlation distance on run-averaged patterns; model RDMs category and subcategory. Brain mask: every aparc+aseg-labelled voxel on the 3 mm BOLD grid (examples/clearvale/scripts/make_brain_mask.py), so the GLM covers all VVS voxels the template RSA uses (the default EPI mask drops ~1/4 of them).",
+  "event_extraction": {
+    "bids_root": "data/cv-bids",
+    "derivatives_root": "data/cv-bids/derivatives/bids-hcp",
+    "bold_glob": "sub-{subject}/ses-{session}/func/sub-{subject}_ses-{session}_task-{task}_dir-*_run-{run}_space-MNI152NLin6Asym_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/ses-*/func/*_events.tsv",
+    "output_file": "data/cv-bids/out/traditional_rdm/master_spreadsheet.csv"
+  },
+  "events": {
+    "hierarchy": [
+      "category",
+      "subcategory",
+      "stimulus"
+    ],
+    "baseline_types": [
+      "BaselineFixation",
+      "trial_fixation"
+    ],
+    "item_filter": {
+      "column": "task",
+      "match": "exact",
+      "value": "loc"
+    }
+  },
+  "pattern_estimation": {
+    "method": "glm",
+    "level": "stimulus",
+    "confounds": {
+      "source": "file",
+      "file_pattern": "data/cv-bids/derivatives/confounds/sub-{subject}/ses-{session}/func/sub-{subject}_ses-{session}_task-{task}_dir-*_run-{run}_desc-confoundsfd_timeseries.tsv",
+      "columns": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z"
+      ],
+      "outlier_regex": [
+        "motion_outlier_.*"
+      ]
+    },
+    "censoring": {
+      "drop_initial_volumes": 10,
+      "mode": "censor"
+    },
+    "glm": {
+      "hrf_model": "spm",
+      "drift_model": "cosine",
+      "high_pass": 0.0078,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null,
+      "signal_scaling": 0,
+      "output_type": "t"
+    },
+    "mask_pattern": "data/cv-bids/derivatives/masks/sub-{subject}/sub-{subject}_space-MNI152NLin6Asym_res-3_desc-aparcaseg_mask.nii.gz"
+  },
+  "rois": {
+    "vvs": {
+      "atlas_pattern": "data/cv-bids/derivatives/bids-hcp/sub-{subject}/ses-*/MNINonLinear/aparc+aseg.nii.gz",
+      "labels": [
+        1007,
+        1009,
+        1011,
+        1013,
+        1016,
+        2007,
+        2009,
+        2011,
+        2013,
+        2016
+      ]
+    }
+  },
+  "rdm": {
+    "method": "correlation",
+    "cv_descriptor": "run",
+    "pattern_rdm": {
+      "enabled": true
+    }
+  },
+  "model_rdms": {
+    "category": {
+      "type": "categorical",
+      "level": "category"
+    },
+    "subcategory": {
+      "type": "categorical",
+      "level": "subcategory"
+    }
+  },
+  "comparison": {
+    "method": "tau-a"
+  },
+  "pipeline": {
+    "output_dir": "data/cv-bids/out/traditional_rdm",
+    "subjects": [
+      "090"
+    ],
+    "analyses": [
+      "rdm"
+    ]
+  }
+}

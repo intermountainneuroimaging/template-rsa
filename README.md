@@ -33,7 +33,8 @@ rsaworkflow/
 │   └── run_pipeline.py                  # all stages locally, from one config
 ├── slurm/                         # same stages as chained SLURM jobs (0_submit_rsa_pipeline.sh)
 ├── tutorial/                      # Haxby 2001 validation dataset: fetch script, configs, results
-├── examples/                      # fMRIPrep study template; working-memory skeleton; Kim 2020 / Bretton 2024 core configs
+├── examples/                      # fMRIPrep study template; working-memory skeleton; Kim 2020 / Bretton 2024 core configs;
+│                                  # clearvale/ (the Clearvale study: configs, BIDS-prep scripts, notebooks)
 ├── _interactive_notebooks/        # study-specific post-hoc notebooks + their shared helpers (rsa_posthoc_common.py)
 ├── docs/                          # lab_methods.md (Kim 2020 / Bretton 2024, formalized + mapped), code_walkthrough.md
 │                                  # (the methods as annotated code, both projects; rebuild with build_code_walkthrough.py),

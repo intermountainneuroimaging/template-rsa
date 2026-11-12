@@ -1,0 +1,276 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "NO-DENOISING variant (no confound regressors, no censored volumes). Paired with config-cv-kim2020-denoised.json, identical except for pattern_estimation.confounds and .censoring. Clearvale (CV) with the Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun method: feature-weighted exemplar-template RSA (the paper's 'item-level'). Run from the rsaworkflow repo root. Inputs (all under data/cv-bids, not in git -- on the HPC, symlink data/cv-bids to the Clearvale BIDS folder): events.tsv from examples/clearvale/scripts/make_events.py (PsychoPy stim.csv -> BIDS events; hierarchy category > subcategory (valence_category) > stimulus (image file)), bids-hcp preprocessed BOLD in MNI152NLin6Asym (3 mm, TR 0.46 s -- the same TR as Kim 2020), and motion confounds with framewise displacement from examples/clearvale/scripts/make_confounds.py. Templates: each image's localizer pattern (3 presentations, 1.85 s image shifted 4.6 s), within its category's localizer mask (category vs. others, p < .05, k >= 10, 6-image mini-blocks merged), weighted by its exemplar-vs-others LSA t map. Validation: kim2020 (the published presentation x presentation validation) and cv (leave-one-localizer-run-out, feature selection refit per fold; not in the paper). Fidelity (stage 3) targets: every WM view event (WMpos and WMneg), scored against its own image's template -- a 30-TR (13.8 s) timecourse from view onset (target only), and encoding fidelity (onset + 4.6 s window; related and others opted in as controls). Study-specific statistics (baseline / minus-maintain timecourses, bin tests, operation x valence) go in a post-hoc notebook like _interactive_notebooks/kim2020_removal_operations.ipynb. ROI: Desikan-Killiany ventral visual labels from the subject's MNINonLinear/aparc+aseg (fusiform, inferior temporal, lateral occipital, lingual, parahippocampal); the lab's VVPS mask (/pl/active/banich/studies/Clearvale/masks/mask_vvps_temporal_3mm.nii.gz) can replace it via mask_pattern. Report lines: one per operation (overlay, mvpa-decoding colors: maintain green, suppress red, switch blue, clear orange), averaged over subcategory / valence; switch-target fidelity (switch_item / switch_category) not scored for now.",
+  "event_extraction": {
+    "bids_root": "data/cv-bids",
+    "derivatives_root": "data/cv-bids/derivatives/bids-hcp",
+    "bold_glob": "sub-{subject}/ses-{session}/func/sub-{subject}_ses-{session}_task-{task}_dir-*_run-{run}_space-MNI152NLin6Asym_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/ses-*/func/*_events.tsv",
+    "output_file": "data/cv-bids/out/kim2020_raw/master_spreadsheet.csv"
+  },
+  "events": {
+    "hierarchy": [
+      "category",
+      "subcategory",
+      "stimulus"
+    ]
+  },
+  "pattern_estimation": {
+    "confounds": null,
+    "censoring": null,
+    "glm": {
+      "hrf_model": "spm",
+      "drift_model": "cosine",
+      "high_pass": 0.0078,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null,
+      "signal_scaling": 0
+    }
+  },
+  "rois": {
+    "vvs": {
+      "atlas_pattern": "data/cv-bids/derivatives/bids-hcp/sub-{subject}/ses-*/MNINonLinear/aparc+aseg.nii.gz",
+      "labels": [
+        1007,
+        1009,
+        1011,
+        1013,
+        1016,
+        2007,
+        2009,
+        2011,
+        2013,
+        2016
+      ]
+    }
+  },
+  "template_rsa": {
+    "rois": [
+      "vvs"
+    ],
+    "category_level": "category",
+    "subcategory_level": "subcategory",
+    "timeseries": {
+      "detrend": true,
+      "standardize": "zscore_sample",
+      "high_pass": 0.0078,
+      "regress_confounds": false
+    },
+    "templates": {
+      "events": {
+        "and": [
+          {
+            "column": "task",
+            "match": "exact",
+            "value": "loc"
+          },
+          {
+            "column": "trial_type",
+            "match": "regex",
+            "value": "(positive|negative|neutral)_(face|place|item)"
+          }
+        ]
+      },
+      "window": {
+        "start": {
+          "reference": "onset",
+          "offset_seconds": 4.6
+        },
+        "end": {
+          "reference": "offset_end",
+          "offset_seconds": 4.6
+        }
+      }
+    },
+    "feature_weighting": {
+      "levels": [
+        "exemplar"
+      ],
+      "category_mask": {
+        "enabled": true,
+        "p_threshold": 0.05,
+        "cluster_extent": 10,
+        "min_voxels": 10,
+        "block_merge_gap_seconds": 5.0
+      },
+      "exemplar_contrast": "all_others",
+      "weight_target_patterns": true
+    },
+    "validation": {
+      "enabled": true,
+      "methods": [
+        "kim2020",
+        "cv"
+      ],
+      "cross_validation": {
+        "strategy": "per_run"
+      }
+    },
+    "targets": {
+      "wm_timecourse": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "regex",
+              "value": "WM(pos|neg)"
+            },
+            {
+              "column": "trial_type",
+              "match": "regex",
+              "value": "view_(face|place)"
+            }
+          ]
+        },
+        "mode": "timecourse",
+        "comparison_sets": [
+          "target"
+        ],
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 0
+          },
+          "end": {
+            "reference": "onset",
+            "offset_seconds": 13.8
+          }
+        },
+        "related_level": "category",
+        "extra_sets": {},
+        "group": {
+          "comparisons": [
+            "target"
+          ],
+          "overlay": {
+            "maintain": {
+              "column": "operation",
+              "match": "exact",
+              "value": "maintain",
+              "color": "green"
+            },
+            "suppress": {
+              "column": "operation",
+              "match": "exact",
+              "value": "suppress",
+              "color": "red"
+            },
+            "switch": {
+              "column": "operation",
+              "match": "exact",
+              "value": "switch",
+              "color": "blue"
+            },
+            "clear": {
+              "column": "operation",
+              "match": "exact",
+              "value": "clear",
+              "color": "orange"
+            }
+          }
+        },
+        "annotation": {
+          "trial_start_event": {
+            "column": "trial_type",
+            "match": "regex",
+            "value": "view_(face|place)"
+          },
+          "annotation_labels": {
+            "view": [
+              "view_face",
+              "view_place"
+            ],
+            "operation cue": [
+              "maintain_face",
+              "maintain_place",
+              "suppress_face",
+              "suppress_place",
+              "switch_face",
+              "switch_place",
+              "clear_face",
+              "clear_place"
+            ]
+          },
+          "next_trial": true
+        }
+      },
+      "encoding_fidelity": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "regex",
+              "value": "WM(pos|neg)"
+            },
+            {
+              "column": "trial_type",
+              "match": "regex",
+              "value": "view_(face|place)"
+            }
+          ]
+        },
+        "mode": "window_mean",
+        "comparison_sets": [
+          "target",
+          "related",
+          "others"
+        ],
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 4.6
+          },
+          "end": {
+            "reference": "offset_end",
+            "offset_seconds": 4.6
+          }
+        },
+        "related_level": "category",
+        "group": {
+          "comparisons": [
+            "target",
+            "related",
+            "others"
+          ],
+          "overlay": {
+            "maintain": {
+              "column": "operation",
+              "match": "exact",
+              "value": "maintain",
+              "color": "green"
+            },
+            "suppress": {
+              "column": "operation",
+              "match": "exact",
+              "value": "suppress",
+              "color": "red"
+            },
+            "switch": {
+              "column": "operation",
+              "match": "exact",
+              "value": "switch",
+              "color": "blue"
+            },
+            "clear": {
+              "column": "operation",
+              "match": "exact",
+              "value": "clear",
+              "color": "orange"
+            }
+          }
+        }
+      }
+    }
+  },
+  "pipeline": {
+    "output_dir": "data/cv-bids/out/kim2020_raw",
+    "subjects": [
+      "090"
+    ],
+    "analyses": [
+      "template",
+      "fidelity"
+    ]
+  }
+}
