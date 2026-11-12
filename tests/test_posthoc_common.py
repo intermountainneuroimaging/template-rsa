@@ -5,7 +5,7 @@ import pandas as pd
 
 from _interactive_notebooks.rsa_posthoc_common import (
     add_previous_trial_columns, baseline_correct, bin_means, difference_scores, first_significant_bin,
-    join_exemplar_columns, make_bins, make_toy_scores, mixed_model, one_sample_by_bin, paired_contrast,
+    join_item_columns, make_bins, make_toy_scores, mixed_model, one_sample_by_bin, paired_contrast,
     subject_means, subtract_reference)
 
 
@@ -32,11 +32,11 @@ def test_previous_trial_columns_are_within_run_and_merged_onto_every_row():
     assert len(out) == len(scores_table())
 
 
-def test_join_exemplar_columns_fills_missing_by_subject_and_exemplar():
+def test_join_item_columns_fills_missing_by_subject_and_item():
     master = pd.DataFrame({"subject": ["1", "1", "2"], "run_id": ["s1", "s1", "s1"], "onset": [0, 5, 0],
                            "task": "study", "stimulus": ["a", "b", "a"], "operation": ["suppress", "maintain", "replace"]})
     post = pd.DataFrame({"subject": ["1", "1", "2", "2"], "stimulus": ["a", "b", "a", "z"], "operation": [None, None, None, "x"]})
-    out = join_exemplar_columns(post, master, {"column": "task", "match": "exact", "value": "study"}, "stimulus", ["operation"])
+    out = join_item_columns(post, master, {"column": "task", "match": "exact", "value": "study"}, "stimulus", ["operation"])
     assert out["operation"].tolist() == ["suppress", "maintain", "replace", "x"]
 
 

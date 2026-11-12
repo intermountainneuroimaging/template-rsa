@@ -9,16 +9,16 @@ statistics are in the post-hoc notebooks (_interactive_notebooks/).
 Group report (default) -> <output_dir>/group/rsa_report.pdf (+ workflow.png)
   1. analysis summary (config settings)
   2. workflow diagram: one box per enabled stage, filled from the config
-  3. data inventory: patterns per RDM row, template exemplars / presentations, run QC
+  3. data inventory: patterns per RDM row, template items / item instances, run QC
   rdm analysis, per ROI: mean RDM, MDS, model fits with noise ceiling and per-subject points,
      cross-validated fits and weights, statistics tables, every subject's RDM
   template analysis, per ROI: validation target / related / others per method (dots = subjects),
-     category-mask sizes, subjects flagged where target <= others, and the presentation-level
-     validation matrices averaged over subjects (kim2020: presentation x presentation; cv: per fold,
-     held-out presentation x fold template) -- every presentation shown separately
+     category-mask sizes, subjects flagged where target <= others, and the item-instance-level
+     validation matrices averaged over subjects (kim2020: item instance x item instance; cv: per fold,
+     held-out item instance x fold template) -- every item instance shown separately
   fidelity analysis, per ROI x target set: descriptive timecourses / bars and comparison-set tests
 
-Subject report (--subject S) -> <output_dir>/sub-S/rsa/sub-S_rsa_report.pdf
+Subject report (--subject S) -> <output_dir>/sub-S/sub-S_rsa_report.pdf
   the same sections for one subject: its RDM / MDS / model fits, its template validation and
   matrices, and its fidelity timecourses / bars.
 
@@ -45,18 +45,24 @@ from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (  # noqa: E402
-    build_model_rdms, hierarchy, load_config, pattern_index_path, pattern_level, rdm_level, read_master_spreadsheet,
-    row_names, safe_name, subject_dir,
+    INSTANCE_LEVEL, build_model_rdms, hierarchy, load_config, pattern_index_path, pattern_level, rdm_level, read_master_spreadsheet,
+    group_stage_dir, row_names, safe_name, stage_dir, subject_dir,
 )
 from utils.rsa_plots import (  # noqa: E402
     draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_validation_matrix, draw_weights, draw_workflow,
 )
 
 PAGE = (8.5, 11)
+LANDSCAPE = (11, 8.5)  # brain-map pages: 4 views per row
 
 
 def read_csv(path, **kwargs):
-    return pd.read_csv(path, **kwargs) if os.path.exists(path) else None
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_csv(path, **kwargs)
+    except pd.errors.EmptyDataError:  # e.g. group tests with a single subject
+        return None
 
 
 def text_page(pdf, title, lines):
@@ -87,8 +93,9 @@ def table_page(pdf, title, tables, max_rows=40):
                 pdf.savefig(fig)
                 plt.close(fig)
             fig = plt.figure(figsize=PAGE)
-            fig.text(0.07, 0.96, title, fontsize=13, weight="bold", va="top")
-            y = 0.92
+            wrapped = textwrap.wrap(title, 75)
+            fig.text(0.07, 0.96, "\n".join(wrapped), fontsize=13, weight="bold", va="top")
+            y = 0.92 - 0.025 * (len(wrapped) - 1)
         label = subtitle + (f"  (first {max_rows} rows)" if truncated else "")
         fig.text(0.07, y, label, fontsize=9.5, weight="bold", va="top")
         ax = fig.add_axes([0.07, y - 0.02 - height, 0.86, height])
@@ -118,7 +125,7 @@ def summary_lines(cfg, subjects):
     pattern = f"{pe['method']} / level {pattern_level(cfg)}"
     if pe["method"] == "glm":
         pattern += f" / {pe['glm']['output_type']}"
-        if pattern_level(cfg) == "item":
+        if pattern_level(cfg) == INSTANCE_LEVEL:
             pattern += f" / {pe['glm']['item_model']}"
     rdm_lines = []
     if "rdm" in (cfg["pipeline"].get("analyses") or ["rdm"]):
@@ -128,7 +135,7 @@ def summary_lines(cfg, subjects):
         f"config:       {cfg.get('_config_path', '(in-memory)')}",
         f"generated:    {datetime.datetime.now():%Y-%m-%d %H:%M}",
         f"subjects:     {', '.join(subjects)}  (n={len(subjects)})",
-        f"hierarchy:    {' > '.join(hierarchy(cfg))} > item",
+        f"hierarchy:    {' > '.join(hierarchy(cfg))} > item instance",
         *rdm_lines,
         f"patterns:     {pattern}",
         f"preprocess:   {preprocessing_summary(pe)}",
@@ -180,7 +187,7 @@ def preprocessing_summary(pe) -> str:
 
 
 def run_qc(output_dir, subjects):
-    frames = [read_csv(os.path.join(subject_dir(output_dir, s), "patterns", f"sub-{s}_run-qc.csv"),
+    frames = [read_csv(os.path.join(os.path.dirname(pattern_index_path(output_dir, s)), f"sub-{s}_run-qc.csv"),
                        dtype={"subject": str, "run_id": str}) for s in subjects]
     frames = [f for f in frames if f is not None]
     return pd.concat(frames, ignore_index=True) if frames else None
@@ -219,7 +226,7 @@ def model_rdm_page(pdf, cfg):
 def subject_rdm_grid(pdf, output_dir, roi, subjects):
     frames = []
     for s in subjects:
-        f = read_csv(os.path.join(subject_dir(output_dir, s), "rsa", f"roi-{roi}", f"sub-{s}_roi-{roi}_rdm.csv"),
+        f = read_csv(os.path.join(stage_dir(output_dir, s, "rdm"), f"roi-{roi}", f"sub-{s}_roi-{roi}_rdm.csv"),
                      index_col=0)
         if f is not None:
             frames.append((s, f))
@@ -243,7 +250,7 @@ def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
     from utils.rsa_common import pattern_rdm_method
 
     method = pattern_rdm_method(cfg["rdm"])
-    mean = read_csv(os.path.join(output_dir, "group", f"roi-{roi}", f"group_roi-{roi}_mean-pattern-rdm.csv"),
+    mean = read_csv(os.path.join(group_stage_dir(output_dir, "rdm"), f"roi-{roi}", f"group_roi-{roi}_mean-pattern-rdm.csv"),
                     index_col=0)
     if mean is not None:
         fig, ax = plt.subplots(figsize=PAGE)
@@ -252,7 +259,7 @@ def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
         ax.set_box_aspect(1)
         fig.suptitle(f"ROI: {roi} -- pattern-level RDM", fontsize=13, weight="bold")
         fig.text(0.07, 0.04, textwrap.fill(
-            f"Rows/columns are single patterns (each {rdm_level(cfg)} x run, or each item), grouped by "
+            f"Rows/columns are single patterns (each {rdm_level(cfg)} x run, or each item instance), grouped by "
             f"{rdm_level(cfg)}; nothing is averaged. {rdm_level(cfg).capitalize()} structure shows as dark diagonal "
             "blocks; run effects or drift show as stripes. The RDM averages these blocks.", 110), fontsize=8)
         pdf.savefig(fig)
@@ -260,7 +267,7 @@ def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
 
     frames = []
     for s in subjects:
-        f = read_csv(os.path.join(subject_dir(output_dir, s), "rsa", f"roi-{roi}",
+        f = read_csv(os.path.join(stage_dir(output_dir, s, "rdm"), f"roi-{roi}",
                                   f"sub-{s}_roi-{roi}_pattern-rdm.csv"), index_col=0)
         if f is not None:
             frames.append((s, f))
@@ -278,19 +285,19 @@ def pattern_rdm_pages(pdf, cfg, output_dir, roi, subjects):
 
 
 def roi_group_pages(pdf, cfg, output_dir, roi, subjects):
-    prefix = os.path.join(output_dir, "group", f"roi-{roi}", f"group_roi-{roi}")
+    prefix = os.path.join(group_stage_dir(output_dir, "rdm"), f"roi-{roi}", f"group_roi-{roi}")
     mean = read_csv(prefix + "_mean-rdm.csv", index_col=0)
     if mean is None:
         return
     method = cfg["comparison"]["method"]
-    summary = read_csv(os.path.join(output_dir, "group", "group_model-comparison.csv"))
+    summary = read_csv(os.path.join(group_stage_dir(output_dir, "rdm"), "group_model-comparison.csv"))
     per_model = summary[summary["roi"] == roi] if summary is not None and len(summary) else None
     cv = read_csv(prefix + "_crossval.csv")
     folds = read_csv(prefix + "_crossval-folds.csv")
     weights = read_csv(prefix + "_weights.csv")
     sims = []
     for s in subjects:
-        t = read_csv(os.path.join(subject_dir(output_dir, s), "rsa", f"sub-{s}_model-comparison.csv"),
+        t = read_csv(os.path.join(stage_dir(output_dir, s, "rdm"), f"sub-{s}_model-comparison.csv"),
                      dtype={"subject": str})
         if t is not None and len(t):
             sims.append(t[t["roi"] == roi])
@@ -335,7 +342,7 @@ def roi_group_pages(pdf, cfg, output_dir, roi, subjects):
 
 
 def roi_subject_page(pdf, cfg, output_dir, roi, subject):
-    base = os.path.join(subject_dir(output_dir, subject), "rsa")
+    base = stage_dir(output_dir, subject, "rdm")
     rdm = read_csv(os.path.join(base, f"roi-{roi}", f"sub-{subject}_roi-{roi}_rdm.csv"), index_col=0)
     if rdm is None:
         return
@@ -421,28 +428,28 @@ def workflow_boxes(cfg, subjects) -> dict:
         boxes["template"] = ("Templates (from all template runs)", [
             f"template events: {describe_query(tr['templates']['events'])}",
             f"window: {describe_window(tr['templates']['window'])}",
-            f"exemplar = {hierarchy(cfg)[-1]}; category = {cat}; subcategory = {sub or '-'}",
+            f"item = {hierarchy(cfg)[-1]}; category = {cat}; subcategory = {sub or '-'}",
             ("category masks: GLM over the template runs, each category vs. the mean of the others, "
              f"one-sided p < {cm['p_threshold']}, clusters >= {cm['cluster_extent']} voxels"
              + (f", mini-blocks merged (gap {cm['block_merge_gap_seconds']} s)" if cm.get("block_merge_gap_seconds") else ""))
             if cm["enabled"] else "category masks: off (whole ROI)",
-            f"weights: {', '.join(fw['levels'])}-level t maps (exemplar contrast: {fw['exemplar_contrast']})",
-            "template = mean of the exemplar's windowed patterns x its weights, inside its category mask"])
+            f"weights: {', '.join(fw['levels'])}-level t maps (item contrast: {fw['item_contrast']})",
+            "template = mean of the item's windowed patterns x its weights, inside its category mask"])
         val = tr["validation"]
         lines = []
         if not val["enabled"] or not val["methods"]:
             lines.append("off")
         for m in val["methods"] if val["enabled"] else []:
             if m == "kim2020":
-                lines.append("kim2020 (published): every presentation (exemplar x run) vs. every other; each pattern "
-                             "x its own exemplar's weights, inside the row exemplar's category mask; Pearson r -> "
+                lines.append("kim2020 (published): every item instance (item x run) vs. every other; each pattern "
+                             "x its own item's weights, inside the row item's category mask; Pearson r -> "
                              "Fisher z per pair; masks and weights from all runs")
             elif m == "cv":
                 c = val["cross_validation"]
                 lines.append(f"cv ({c['strategy']}" + (f", {c['n_splits']} splits" if c.get("n_splits") else "")
                              + "): masks, weights and templates refit on the training runs; each held-out "
-                             "presentation scored against every fold template as a target")
-        lines.append("summary: target (same exemplar) / related (same category) / others (other categories)")
+                             "item instance scored against every fold template as a target")
+        lines.append("summary: target (same item) / related (same category) / others (other categories)")
         boxes["validation"] = ("Template validation", lines)
         if "fidelity" in analyses:
             from workflows.template_rsa import target_specs
@@ -455,10 +462,10 @@ def workflow_boxes(cfg, subjects) -> dict:
                       else f"; lines by {' x '.join(g['group_by'])}" if g.get("group_by") else "")
                 lines.append(f"{name}: {describe_query(spec['events'])}; {spec['mode']}, window "
                              f"{describe_window(spec['window'])}; sets: {', '.join(sets)}{rel}{by}")
-            lines.append("score: the event's pattern inside its own exemplar's category mask x that exemplar's "
-                         "weights, Pearson r with the exemplar's template, Fisher z (sets of several templates: "
+            lines.append("score: the event's pattern inside its own item's category mask x that item's "
+                         "weights, Pearson r with the item's template, Fisher z (sets of several templates: "
                          "mean r, then z)")
-            boxes["fidelity"] = ("Template fidelity (each event vs. its own exemplar's template)", lines)
+            boxes["fidelity"] = ("Template fidelity (each event vs. its own item's template)", lines)
     group = []
     if "rdm" in analyses:
         group.append("RDM: mean RDM, model fits with noise ceiling, statistics")
@@ -486,10 +493,10 @@ def template_summary_lines(cfg) -> list:
     cm = fw["category_mask"]
     val = tr["validation"]
     lines = ["", "template RSA (docs/lab_methods.md):",
-             f"  exemplars:    {hierarchy(cfg)[-1]} (category {template_levels(cfg)[0]}, subcategory {template_levels(cfg)[1]})",
+             f"  items:    {hierarchy(cfg)[-1]} (category {template_levels(cfg)[0]}, subcategory {template_levels(cfg)[1]})",
              f"  ROIs:         {', '.join(tr['rois'] or list(cfg['rois']))}",
              f"  templates:    {describe_query(tr['templates']['events'])}",
-             f"  weighting:    levels {fw['levels']}, exemplar contrast {fw['exemplar_contrast']}, category mask "
+             f"  weighting:    levels {fw['levels']}, item contrast {fw['item_contrast']}, category mask "
              + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off"),
              f"  validation:   {', '.join(val['methods']) if val['enabled'] else 'off'}"
              + (f" (cv: {val['cross_validation']['strategy']})" if "cv" in val["methods"] else "")]
@@ -499,36 +506,36 @@ def template_summary_lines(cfg) -> list:
     return lines
 
 
-def presentation_caption(items: pd.DataFrame, method: str, subject: str = None, n_subjects=None) -> str:
-    """Caption for a validation matrix: what a row / column / cell is and how many presentations each item has."""
-    if "n_presentations" in items:
-        counts = items.set_index("exemplar")["n_presentations"]
+def item_instance_caption(items: pd.DataFrame, method: str, subject: str = None, n_subjects=None) -> str:
+    """Caption for a validation matrix: what a row / column / cell is and how many item instances each item has."""
+    if "n_item_instances" in items:
+        counts = items.set_index("item")["n_item_instances"]
     else:  # group items table
-        counts = items.set_index("exemplar")["max_presentations"]
+        counts = items.set_index("item")["max_item_instances"]
     mode = int(counts.mode().iloc[0]) if len(counts) else 0
     odd = counts[counts != mode]
-    pres = f"{mode} presentation(s) per exemplar" + (
+    pres = f"{mode} item instance(s) per item" + (
         f" ({len(odd)} with fewer/more: " + ", ".join(f"{e} {int(n)}" for e, n in odd.head(6).items())
         + (" ..." if len(odd) > 6 else "") + ")" if len(odd) else "")
     if method == "kim2020":
-        what = ("Rows and columns: every presentation (exemplar x run; repeats within a run averaged, as in Kim et al. "
-                "2020), shown separately. Cell: Fisher z of r between the two presentations, each weighted by its own "
-                "exemplar's weights inside the ROW exemplar's category mask (so the matrix is not symmetric across "
-                "categories). The diagonal (a presentation with itself) is blank.")
+        what = ("Rows and columns: every item instance (item x run; repeats within a run averaged, as in Kim et al. "
+                "2020), shown separately. Cell: Fisher z of r between the two item instances, each weighted by its own "
+                "item's weights inside the ROW item's category mask (so the matrix is not symmetric across "
+                "categories). The diagonal (an item instance with itself) is blank.")
     else:
-        what = ("Rows: each presentation of the fold's held-out run(s), shown separately; columns: the templates built "
+        what = ("Rows: each item instance of the fold's held-out run(s), shown separately; columns: the templates built "
                 "from that fold's training runs. Cell: Fisher z of r, both vectors inside template j's category mask "
-                "and weighted by j's weights. Exemplars with no presentation in the held-out run(s) have no row.")
-    tail = f" Mean over {n_subjects} subjects (aligned by exemplar and presentation number)." if n_subjects else ""
-    return f"{what} {pres}.{tail} Sorted by category > subcategory > exemplar > presentation."
+                "and weighted by j's weights. Items with no item instance in the held-out run(s) have no row.")
+    tail = f" Mean over {n_subjects} subjects (aligned by item and item instance number)." if n_subjects else ""
+    return f"{what} {pres}.{tail} Sorted by category > subcategory > item > item instance."
 
 
 def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
-    """target / related / others per method x level: mean +- SEM over presentations (subject) or subjects (group)."""
+    """target / related / others per method x level: mean +- SEM over item instances (subject) or subjects (group)."""
     comps = ["target", "related", "others"]
     rank = {"kim2020": 0, "cv": 1}
     groups = sorted(summary[["method", "level"]].drop_duplicates().itertuples(index=False, name=None),
-                    key=lambda g: (rank.get(g[0], 9), g[1] != "exemplar", g[1]))
+                    key=lambda g: (rank.get(g[0], 9), g[1] != "item", g[1]))
     width = 0.8 / len(comps)
     for j, comp in enumerate(comps):
         for i, (m, lv) in enumerate(groups):
@@ -547,7 +554,7 @@ def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
 
 
 def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
-    """One page per method x level: kim2020 one presentation x presentation matrix; cv one matrix per fold."""
+    """One page per method x level: kim2020 one item instance x item instance matrix; cv one matrix per fold."""
     for (method, level), part in cells.groupby(["method", "level"], sort=False):
         folds = sorted(part["fold"].astype(str).unique(), key=lambda f: (f != "all", int(f) if f.isdigit() else 0))
         n = len(folds)
@@ -560,12 +567,12 @@ def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
         for k, fold in enumerate(folds):
             ax = fig.add_subplot(gs[k // ncols, k % ncols])
             sub = part[part["fold"].astype(str) == fold]
-            nr = sub[["row_exemplar", "row_presentation"]].drop_duplicates().shape[0]
-            nc = sub[["col_exemplar", "col_presentation"]].drop_duplicates().shape[0]
+            nr = sub[["row_item", "row_item_instance"]].drop_duplicates().shape[0]
+            nc = sub[["col_item", "col_item_instance"]].drop_duplicates().shape[0]
             label = "all template runs" if fold == "all" else f"fold {fold}"
             draw_validation_matrix(ax, sub, items, f"{label}: {nr} x {nc}", labels=n <= 4)
             ax.set_box_aspect(1)
-        caption = presentation_caption(items, method, n_subjects=n_subjects)
+        caption = item_instance_caption(items, method, n_subjects=n_subjects)
         if n_subjects is not None and "n_subjects" in part:
             caption += f" Subjects per cell: {int(part['n_subjects'].min())}-{int(part['n_subjects'].max())}."
         fig.text(0.07, 0.15, "\n".join(textwrap.wrap(caption, 120)), fontsize=7.5, va="top")
@@ -573,23 +580,115 @@ def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
         plt.close(fig)
 
 
-def template_section(pdf, cfg, output_dir, subjects, subject=None):
-    """Template validation pages (subject or group): mask sizes, target / related / others per method and the
-    presentation-level matrices (no averaging over presentations)."""
+def brain_map_pages(pdf, cfg, output_dir, subjects, subject=None):
+    """Brain maps of the template feature selection on the inflated cortex (fsaverage5), one page per ROI.
+    Subject: each category mask (category-vs-others t inside the mask) and one sample item's weights and
+    template. Group: per category, the fraction of subjects whose mask includes each voxel."""
+    from nilearn import image
+    from nilearn.maskers import NiftiMasker
+
+    from utils.rsa_plots import draw_surface_rows
+
+    fw = cfg["template_rsa"]["feature_weighting"]
+    cm = fw["category_mask"]
+    mask_rule = (f"p<{cm['p_threshold']}, k>={cm['cluster_extent']}" if cm["enabled"] else "masks off: the whole ROI")
+    others = {"all_others": "all other items", "within_category": "the other items of its category",
+              "within_subcategory": "the other items of its subcategory"}.get(fw["item_contrast"], "other items")
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
         if subject:
-            base = os.path.join(subject_dir(output_dir, subject), "template_rsa", f"sub-{subject}_roi-{roi}_")
+            tdir = stage_dir(output_dir, subject, "template")
+            prefix = os.path.join(tdir, f"sub-{subject}_roi-{roi}_")
+            npz = prefix + "level-item_templates.npz"
+            if not (os.path.exists(prefix + "roi-mask.nii.gz") and os.path.exists(npz)):
+                continue
+            roi_img = image.load_img(prefix + "roi-mask.nii.gz")
+            masker = NiftiMasker(mask_img=roi_img).fit()
+            d = np.load(npz, allow_pickle=False)
+            ex, cats = [str(x) for x in d["item"]], [str(x) for x in d["category"]]
+            rows = []
+            for c in dict.fromkeys(cats):
+                m = image.load_img(prefix + f"category-{safe_name(c)}_mask.nii.gz").get_fdata() > 0
+                t_path = prefix + f"category-{safe_name(c)}_stat-t.nii.gz"
+                t = image.load_img(t_path) if os.path.exists(t_path) else None
+                data = (t.get_fdata() if t is not None else np.ones(m.shape)) * m
+                rows.append((f"{c} > others   (t inside the {c} mask: {int(m.sum())} voxels, {mask_rule})", image.new_img_like(roi_img, data.astype(np.float32))))
+            # sample item: the best kim2020 target match, as in the methods figures (else the first)
+            val = read_csv(prefix + "template-validation.csv", dtype={"item": str})
+            pick = ex[0]
+            if val is not None and "item" in val:
+                tz = val[(val["comparison"] == "target") & (val["level"] == "item")]
+                tz = tz[tz["method"] == "kim2020"] if (tz["method"] == "kim2020").any() else tz
+                if len(tz):
+                    pick = str(tz.groupby("item")["z"].mean().idxmax())
+            k = ex.index(pick)
+            m, w, tpl = d["masks"][k], d["weights"][k], np.nan_to_num(d["templates"][k])
+            scale = 10 / np.abs(tpl[m]).max() if m.any() and np.abs(tpl[m]).max() > 0 else 1.0
+            fig = plt.figure(figsize=LANDSCAPE)
+            fig.suptitle(f"sub-{subject}, ROI {roi}: category masks on the inflated cortex", fontsize=12, weight="bold")
+            fig.text(0.05, 0.935, "Each row is one category contrast, category > others (the other categories): its t map, "
+                     "shown inside the category mask it\ndefines. MNI volumes projected onto fsaverage5 (display only; "
+                     "the analysis is in the volume).", fontsize=8, va="top")
+            draw_surface_rows(fig, fig.add_gridspec(1, 1, top=0.88, bottom=0.03, left=0.04, right=0.95)[0], rows,
+                              threshold=0.5, vmax=12, cbar_label="t")
+            pdf.savefig(fig)
+            plt.close(fig)
+            item_rows = [(f"{pick} > {others}   (weights: t inside the {cats[k]} mask, {int(m.sum())} voxels)", masker.inverse_transform(np.where(m, w, 0).astype(np.float32))),
+                         (f"{pick}: template   (mean BOLD of its item instances x weights, scaled to +-10)", masker.inverse_transform((tpl * m * scale).astype(np.float32)))]
+            fig = plt.figure(figsize=LANDSCAPE)
+            fig.suptitle(f"sub-{subject}, ROI {roi}: sample item {pick} on the inflated cortex", fontsize=12,
+                         weight="bold")
+            draw_surface_rows(fig, fig.add_gridspec(1, 1, top=0.88, bottom=0.3, left=0.04, right=0.95)[0], item_rows,
+                              threshold=0.5, vmax=10)
+            fig.text(0.05, 0.22, "\n".join(textwrap.wrap(
+                f"Sample item {pick} ({cats[k]}): the item with the highest target validation z. Weights = the item > "
+                f"{others} t map, kept inside its {cats[k]} mask ({cats[k]} > others); template = mean lag-shifted BOLD "
+                "of its item instances x weights. MNI volumes projected onto fsaverage5 (display only; the analysis is "
+                "in the volume).", 150)), fontsize=8, va="top")
+        else:
+            masks = {}
+            roi_imgs = []
+            for s in subjects:
+                prefix = os.path.join(stage_dir(output_dir, s, "template"), f"sub-{s}_roi-{roi}_")
+                for p in sorted(glob.glob(prefix + "category-*_mask.nii.gz")):
+                    c = os.path.basename(p)[len(f"sub-{s}_roi-{roi}_category-"):-len("_mask.nii.gz")]
+                    masks.setdefault(c, []).append(p)
+                if os.path.exists(prefix + "roi-mask.nii.gz"):
+                    roi_imgs.append(prefix + "roi-mask.nii.gz")
+            if not masks:
+                continue
+            ref = image.load_img(roi_imgs[0] if roi_imgs else next(iter(masks.values()))[0])
+            def mean_of(paths):
+                return image.mean_img([image.resample_to_img(p, ref, interpolation="nearest") for p in paths],
+                                      copy_header=True)
+            rows = [(f"{c} > others   (fraction of {len(p)} subject(s) whose {c} mask includes the voxel)", mean_of(p))
+                    for c, p in masks.items()]
+            fig = plt.figure(figsize=LANDSCAPE)
+            fig.suptitle(f"ROI {roi}: category masks across subjects", fontsize=12, weight="bold")
+            fig.text(0.05, 0.935, f"Each row is one category contrast, category > others ({mask_rule}): the fraction "
+                     "of subjects whose mask includes each voxel.", fontsize=8, va="top")
+            draw_surface_rows(fig, fig.add_gridspec(1, 1, top=0.88, bottom=0.03, left=0.04, right=0.95)[0], rows,
+                              threshold=0.01, vmin=0, vmax=1, cmap="YlOrRd", symmetric=False, cbar_label="fraction")
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def template_section(pdf, cfg, output_dir, subjects, subject=None):
+    """Template validation pages (subject or group): mask sizes, target / related / others per method and the
+    item-instance-level matrices (no averaging over item instances)."""
+    for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
+        if subject:
+            base = os.path.join(stage_dir(output_dir, subject, "template"), f"sub-{subject}_roi-{roi}_")
             val = read_csv(base + "template-validation.csv", dtype={"subject": str, "fold": str})
-            cells = read_csv(base + "validation-pairs.csv", dtype={"fold": str, "row_exemplar": str, "col_exemplar": str})
-            items = read_csv(base + "items.csv", dtype={"exemplar": str})
+            cells = read_csv(base + "validation-pairs.csv", dtype={"fold": str, "row_item": str, "col_item": str})
+            items = read_csv(base + "items.csv", dtype={"item": str})
             fs = read_csv(base + "feature-selection.csv", dtype={"fold": str})
             n_sub = None
         else:
-            gdir = os.path.join(output_dir, "group", "template_rsa", f"roi-{roi}_")
+            gdir = os.path.join(group_stage_dir(output_dir, "template"), f"roi-{roi}_")
             val = read_csv(gdir + "template-validation.csv", dtype={"subject": str})
-            cells = read_csv(gdir + "validation-matrix.csv", dtype={"fold": str, "row_exemplar": str, "col_exemplar": str})
-            items = read_csv(gdir + "items.csv", dtype={"exemplar": str})
-            frames = [read_csv(os.path.join(subject_dir(output_dir, s), "template_rsa", f"sub-{s}_roi-{roi}_feature-selection.csv"),
+            cells = read_csv(gdir + "validation-matrix.csv", dtype={"fold": str, "row_item": str, "col_item": str})
+            items = read_csv(gdir + "items.csv", dtype={"item": str})
+            frames = [read_csv(os.path.join(stage_dir(output_dir, s, "template"), f"sub-{s}_roi-{roi}_feature-selection.csv"),
                                dtype={"fold": str}) for s in subjects]
             frames = [f.assign(subject=s) for f, s in zip(frames, subjects) if f is not None]
             fs = pd.concat(frames, ignore_index=True) if frames else None
@@ -603,7 +702,7 @@ def template_section(pdf, cfg, output_dir, subjects, subject=None):
         gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.1], left=0.1, right=0.95, top=0.9, bottom=0.08, hspace=0.45)
         validation_bars(fig.add_subplot(gs[0]), val, by_subject=not subject)
         fig.axes[-1].set_title("target / related / others (mean +- SEM over "
-                               + ("presentations" if subject else "subjects; dots = subjects") + ")", fontsize=9, loc="left")
+                               + ("item instances" if subject else "subjects; dots = subjects") + ")", fontsize=9, loc="left")
         ax = fig.add_subplot(gs[1])
         ax.axis("off")
         if fs is not None and len(fs):
@@ -639,7 +738,7 @@ def fidelity_section(pdf, cfg, output_dir, subject=None):
     from workflows.group_fidelity import compute_event_markers, describe
     from workflows.template_rsa import target_specs
 
-    gdir = os.path.join(output_dir, "group", "fidelity")
+    gdir = group_stage_dir(output_dir, "fidelity")
     sheet = cfg["event_extraction"]["output_file"]
     master = read_master_spreadsheet(sheet) if subject and os.path.exists(sheet) else None
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
@@ -648,7 +747,7 @@ def fidelity_section(pdf, cfg, output_dir, subject=None):
             g = spec["group"]
             timecourse = spec["mode"] == "timecourse"
             if subject:
-                scores = read_csv(os.path.join(subject_dir(output_dir, subject), "fidelity",
+                scores = read_csv(os.path.join(stage_dir(output_dir, subject, "fidelity"),
                                                f"sub-{subject}_roi-{roi}_target-{name}_scores.csv"),
                                   dtype={"subject": str}, low_memory=False)
                 if scores is None or scores.empty:
@@ -702,7 +801,7 @@ def fidelity_section(pdf, cfg, output_dir, subject=None):
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
     if subject:
         subjects = [subject]
-        out = os.path.join(subject_dir(output_dir, subject), "rsa", f"sub-{subject}_rsa_report.pdf")
+        out = os.path.join(subject_dir(output_dir, subject), f"sub-{subject}_rsa_report.pdf")
     else:
         found = sorted(os.path.basename(p)[4:] for p in glob.glob(os.path.join(output_dir, "sub-*")))
         subjects = [s for s in (subjects or found) if s in found]
@@ -716,7 +815,7 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
         workflow_page(pdf, cfg, subjects, os.path.join(os.path.dirname(out), "workflow.png"))
         inv = inventory(output_dir, subjects, row_names(cfg), rdm_level(cfg)) if "rdm" in analyses else None
         table_page(pdf, "Data inventory", [(f"Patterns per {rdm_level(cfg)}", inv),
-                                           ("Template exemplars and presentations", template_inventory(cfg, output_dir, subjects)
+                                           ("Template items and item instances", template_inventory(cfg, output_dir, subjects)
                                             if "template" in analyses else None),
                                            ("Run QC: confounds and censoring", run_qc(output_dir, subjects))],
                    max_rows=60)
@@ -728,6 +827,7 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
                 else:
                     roi_group_pages(pdf, cfg, output_dir, roi, subjects)
         if "template" in analyses:
+            brain_map_pages(pdf, cfg, output_dir, subjects, subject)
             template_section(pdf, cfg, output_dir, subjects, subject)
         if "fidelity" in analyses:
             fidelity_section(pdf, cfg, output_dir, subject)
@@ -739,12 +839,12 @@ def template_inventory(cfg, output_dir, subjects):
     rows = []
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
         for s in subjects:
-            it = read_csv(os.path.join(subject_dir(output_dir, s), "template_rsa", f"sub-{s}_roi-{roi}_items.csv"))
+            it = read_csv(os.path.join(stage_dir(output_dir, s, "template"), f"sub-{s}_roi-{roi}_items.csv"))
             if it is not None:
-                rows.append({"subject": s, "roi": roi, "exemplars": len(it),
-                             "presentations": int(it["n_presentations"].sum()),
-                             "min per exemplar": int(it["n_presentations"].min()),
-                             "max per exemplar": int(it["n_presentations"].max())})
+                rows.append({"subject": s, "roi": roi, "items": len(it),
+                             "item instances": int(it["n_item_instances"].sum()),
+                             "min per item": int(it["n_item_instances"].min()),
+                             "max per item": int(it["n_item_instances"].max())})
     return pd.DataFrame(rows) if rows else None
 
 

@@ -20,7 +20,7 @@ Each table has one row per subject × event × [volume] × weighting level × co
 [rsa_posthoc_common.py](rsa_posthoc_common.py) holds what the notebooks share. It knows nothing about any study:
 
 - **loading:** the group raw table and the event table
-- **table helpers:** previous-trial columns, exemplar columns joined across phases
+- **table helpers:** previous-trial columns, item columns joined across phases
 - **aggregation:** subject means, baseline correction, reference subtraction
 - **statistics:** bins, one-sample tests with FDR, rm-ANOVA, pairwise tests, paired contrasts with bootstrap CIs, mixed models
 - **plots, outputs, toy data**

@@ -23,14 +23,14 @@ dropped only when no volume of its window was acquired.
   6 volumes.
 - *Localizer templates:* in sub-017 D1 run-01 and sub-026 A1 run-01 the stimulus computer fell 12–16 s behind
   schedule (about twice the usual per-trial lag plus one stall), so the last images of the run were shown after
-  the scan ended or too late for their response window. Five presentations (sub-017: 2; sub-026: 3; all negative
-  faces) have no data and are dropped, leaving those exemplars' templates built from 2 rather than 3
-  presentations. They contribute nothing to the localizer GLMs.
+  the scan ended or too late for their response window. Five item instances (sub-017: 2; sub-026: 3; all negative
+  faces) have no data and are dropped, leaving those items' templates built from 2 rather than 3
+  item instances. They contribute nothing to the localizer GLMs.
 
 **Early stimulus list (19 sessions, Dec 2023 – Jan 2024, sub-001–029).** The WM switch cue used 5 words with no
 localizer image (blackberry, blueberry, paint roller, shears, toolbox; 373 switch trials). These trials receive
 no `switch_item` score but are scored for target, related, other, and `switch_category`. The same list's
-localizer showed 12 negative faces 2 or 4 times instead of 3; templates average whatever presentations exist.
+localizer showed 12 negative faces 2 or 4 times instead of 3; templates average whatever item instances exist.
 
 **File-name differences between tasks.** Two images are named differently in the localizer and WM lists
 (`Animal.Carcass.1.jpg` / `Animal.carcass.1.jpg`; `yellowstone_1.png` / `yellowstone_1.jpg`). Stimuli are matched

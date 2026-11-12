@@ -1,7 +1,7 @@
 """Confounds / censoring on a synthetic dataset laid out like fMRIPrep output.
 
 Each run carries (a) a strong artifact that follows a motion trace with a fixed spatial
-map equal to exemplar a's pattern, time-locked to exemplar c's blocks, and (b) a few high-motion spikes flagged by
+map equal to item a's pattern, time-locked to item c's blocks, and (b) a few high-motion spikes flagged by
 framewise displacement. Regressing the fMRIPrep motion confounds and censoring the
 flagged volumes should recover the true a/b-vs-c geometry."""
 
@@ -125,7 +125,7 @@ def test_run_nuisance_censor_and_regress(tmp_path):
 @pytest.mark.parametrize("method,level,censor_mode", [
     ("glm", None, "censor"),
     ("glm", None, "regress"),
-    ("glm", "item", "censor"),
+    ("glm", "item_instance", "censor"),
     ("volume_average", None, "censor"),
 ])
 def test_confounds_recover_geometry(tmp_path, method, level, censor_mode):
@@ -147,7 +147,7 @@ def test_confounds_recover_geometry(tmp_path, method, level, censor_mode):
     assert fits["clean"] > 0.9
     assert fits["clean"] > fits["raw"] + 0.2
 
-    qc = pd.read_csv(tmp_path / "out-clean" / "sub-1" / "patterns" / "sub-1_run-qc.csv")
+    qc = pd.read_csv(tmp_path / "out-clean" / "sub-1" / "rdm" / "patterns" / "sub-1_run-qc.csv")
     assert (qc["n_flagged"] >= len(SPIKES)).all() and (qc["n_confounds"] >= 6).all()
 
 

@@ -24,16 +24,16 @@ Columns added to every row of a trial (n/a elsewhere):
   category            face / place / item            (PsychoPy clusterID)
   valence             positive / negative / neutral  (whitespace stripped)
   subcategory         <valence>_<category>, e.g. positive_face  (nests within category)
-  stimulus            the exemplar id: the image file name lowercased, trimmed, extension dropped
+  stimulus            the item id: the image file name lowercased, trimmed, extension dropped
                       (the PsychoPy lists spell some files differently across tasks, e.g. localizer
                       'Animal.Carcass.1.jpg' / 'yellowstone_1.png ' vs. WM 'Animal.carcass.1.jpg' /
-                      'yellowstone_1.jpg'; the id makes them one exemplar)
+                      'yellowstone_1.jpg'; the id makes them one item)
   image_file          the file name exactly as the PsychoPy log has it (whitespace trimmed)
   condition_code      PsychoPy Condition number
   operation           WM: maintain / suppress / clear / switch
   switch_target       WM switch trials: the word on the bottom line (the item to switch to)
   switch_category     WM switch trials: "item" (the switched-to things are the localizer's neutral items)
-  switch_exemplar     WM switch trials: the localizer image of that item (word matched to file name,
+  switch_item         WM switch trials: the localizer image of that item (word matched to file name,
                       e.g. "screw driver" -> screwdriver04b); a template-RSA extra_set
   iti                 the trial's ITI (s)
   response, response_time   localizer: rating key and RT (s, from the rating window onset)
@@ -65,7 +65,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 HERE = os.environ.get("CV_BIDS", os.path.join(REPO, "data", "cv-bids"))
 RUN_RE = re.compile(r"task-(?P<task>[A-Za-z]+)_dir-(?P<dir>[A-Za-z]+)_run-(?P<run>\d+)")
 COLUMNS = ["onset", "duration", "trial_type", "trial", "category", "valence", "subcategory", "stimulus",
-           "image_file", "condition_code", "operation", "switch_target", "switch_category", "switch_exemplar", "iti", "response", "response_time", "label_source"]
+           "image_file", "condition_code", "operation", "switch_target", "switch_category", "switch_item", "iti", "response", "response_time", "label_source"]
 
 
 def clean(v):
@@ -109,7 +109,7 @@ def scan_length(bold: str, task: str) -> tuple:
 
 
 def stimulus_id(name) -> str:
-    """Exemplar id: file name lowercased and trimmed, image extension dropped."""
+    """Item id: file name lowercased and trimmed, image extension dropped."""
     return re.sub(r"\.(jpe?g|png|bmp|gif|tiff?)$", "", str(name).strip().lower())
 
 
@@ -190,8 +190,8 @@ def wm_events(stim: pd.DataFrame, t0: float, end: float, to_image=lambda w: None
         common = {"trial": k + 1, "operation": op, "iti": tr["ITI"], "label_source": tr["label_source"],
                   "switch_target": target,
                   "switch_category": "item" if op == "switch" else None,
-                  "switch_exemplar": to_image(target) if op == "switch" else None}
-        if op == "switch" and common["switch_exemplar"] is None:
+                  "switch_item": to_image(target) if op == "switch" else None}
+        if op == "switch" and common["switch_item"] is None:
             print(f"  (!) trial {k + 1}: no unique localizer item image for switch word {target!r}")
         rows.append({"onset": tr["encode_item.started"] - t0, "trial_type": f"view_{img['category']}",
                      "duration": tr["encode_item.stopped"] - tr["encode_item.started"], **common, **img})

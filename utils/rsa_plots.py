@@ -42,7 +42,7 @@ def row_blocks(labels) -> list:
 
 def draw_pattern_rdm(ax, matrix: pd.DataFrame, title: str, cmap: str = "viridis", colorbar: bool = True,
                      labels: bool = True, line_width: float = 0.6):
-    """Pattern-level RDM (rows = single patterns grouped by RDM row, e.g. exemplar): white lines
+    """Pattern-level RDM (rows = single patterns grouped by RDM row, e.g. item): white lines
     between blocks, row names centered on each block instead of one tick per pattern. Color limits
     are the 1st-99th percentile of off-diagonal values so the zero diagonal doesn't wash out
     the structure."""
@@ -179,13 +179,16 @@ def draw_event_markers(ax, markers: list, lag_seconds=None, fontsize: float = 6.
     shifted by the lag, as faint dashed lines labeled "+lag" (where that event's BOLD response peaks)."""
     if not markers:
         return
-    ylim = ax.get_ylim()
+    lo, hi = ax.get_ylim()
+    ylim = (lo, hi + 0.35 * (hi - lo))  # headroom: the labels sit above the data, not on the lines
+    pad = 0.02 * (ylim[1] - ylim[0])
     for m in markers:
         label = m["label"] + (" (variable timing)" if m.get("variable") and m["label"] else "")
         ax.axvline(m["start_s"], color="gray", ls=":", lw=0.8, zorder=0)
         if label:
-            ax.text(m["start_s"], ylim[1], label, fontsize=fontsize, ha="right", va="top", rotation=90,
-                    rotation_mode="anchor", color="0.35")
+            ax.text(m["start_s"], ylim[1] - pad, " " + label, fontsize=fontsize, ha="right", va="bottom", rotation=90,
+                    rotation_mode="anchor", color="0.35", clip_on=True,
+                    bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.85, "pad": 0.5})
         if lag_seconds and m["label"]:
             x = m["start_s"] + lag_seconds
             if x <= ax.get_xlim()[1]:
@@ -339,33 +342,33 @@ def draw_workflow(fig, boxes: dict, title: str = "Analysis workflow"):
 
 
 def matrix_order(items: pd.DataFrame) -> list:
-    """Exemplars sorted by category > subcategory > exemplar."""
-    cols = [c for c in ("category", "subcategory", "exemplar") if c in items]
-    return items.sort_values(cols)["exemplar"].astype(str).tolist()
+    """Items sorted by category > subcategory > item."""
+    cols = [c for c in ("category", "subcategory", "item") if c in items]
+    return items.sort_values(cols)["item"].astype(str).tolist()
 
 
 def draw_validation_matrix(ax, cells: pd.DataFrame, items: pd.DataFrame, title: str, value: str = "z",
                            colorbar: bool = True, labels: bool = True):
-    """Presentation-level validation matrix: rows = (row_exemplar, row_presentation), columns =
-    (col_exemplar, col_presentation), every presentation shown separately (no averaging over instances).
-    Sorted by category > subcategory > exemplar > presentation; category boundaries in black, subcategory
+    """Item instance-level validation matrix: rows = (row_item, row_item_instance), columns =
+    (col_item, col_item_instance), every item instance shown separately (no averaging over instances).
+    Sorted by category > subcategory > item > item instance; category boundaries in black, subcategory
     boundaries in gray; missing cells (e.g. the identical pair) are blank. -> the image (for a colorbar)."""
     order = {e: k for k, e in enumerate(matrix_order(items))}
-    cells = cells[cells["row_exemplar"].astype(str).isin(order) & cells["col_exemplar"].astype(str).isin(order)]
-    rows = cells[["row_exemplar", "row_presentation"]].drop_duplicates().astype({"row_exemplar": str})
-    cols = cells[["col_exemplar", "col_presentation"]].drop_duplicates().astype({"col_exemplar": str})
-    rows = rows.assign(k=rows["row_exemplar"].map(order)).sort_values(["k", "row_presentation"]).reset_index(drop=True)
-    cols = cols.assign(k=cols["col_exemplar"].map(order)).sort_values(["k", "col_presentation"]).reset_index(drop=True)
-    r_idx = {(e, p): i for i, (e, p) in enumerate(zip(rows["row_exemplar"], rows["row_presentation"]))}
-    c_idx = {(e, p): j for j, (e, p) in enumerate(zip(cols["col_exemplar"], cols["col_presentation"]))}
+    cells = cells[cells["row_item"].astype(str).isin(order) & cells["col_item"].astype(str).isin(order)]
+    rows = cells[["row_item", "row_item_instance"]].drop_duplicates().astype({"row_item": str})
+    cols = cells[["col_item", "col_item_instance"]].drop_duplicates().astype({"col_item": str})
+    rows = rows.assign(k=rows["row_item"].map(order)).sort_values(["k", "row_item_instance"]).reset_index(drop=True)
+    cols = cols.assign(k=cols["col_item"].map(order)).sort_values(["k", "col_item_instance"]).reset_index(drop=True)
+    r_idx = {(e, p): i for i, (e, p) in enumerate(zip(rows["row_item"], rows["row_item_instance"]))}
+    c_idx = {(e, p): j for j, (e, p) in enumerate(zip(cols["col_item"], cols["col_item_instance"]))}
     M = np.full((len(rows), len(cols)), np.nan)
-    ri = [r_idx[(str(e), p)] for e, p in zip(cells["row_exemplar"], cells["row_presentation"])]
-    ci = [c_idx[(str(e), p)] for e, p in zip(cells["col_exemplar"], cells["col_presentation"])]
+    ri = [r_idx[(str(e), p)] for e, p in zip(cells["row_item"], cells["row_item_instance"])]
+    ci = [c_idx[(str(e), p)] for e, p in zip(cells["col_item"], cells["col_item_instance"])]
     M[ri, ci] = cells[value].to_numpy()
     finite = M[np.isfinite(M)]
     lim = float(np.nanpercentile(np.abs(finite), 98)) if finite.size else 1.0
     im = ax.imshow(M, cmap="RdBu_r", vmin=-lim, vmax=lim, interpolation="nearest", aspect="auto")
-    info = items.astype({"exemplar": str}).set_index("exemplar")
+    info = items.astype({"item": str}).set_index("item")
 
     def bounds(ex_list, level):
         lab = [str(info.loc[e, level]) if level in info else "" for e in ex_list]
@@ -373,7 +376,7 @@ def draw_validation_matrix(ax, cells: pd.DataFrame, items: pd.DataFrame, title: 
         mids = [(a + b - 1) / 2 for a, b in zip([0] + edges, edges + [len(lab)])]
         return lab, edges, mids
 
-    for axis, ex_list in (("y", rows["row_exemplar"].tolist()), ("x", cols["col_exemplar"].tolist())):
+    for axis, ex_list in (("y", rows["row_item"].tolist()), ("x", cols["col_item"].tolist())):
         line = ax.axhline if axis == "y" else ax.axvline
         if "subcategory" in info and info["subcategory"].notna().any():
             for e in bounds(ex_list, "subcategory")[1]:
@@ -396,3 +399,43 @@ def draw_validation_matrix(ax, cells: pd.DataFrame, items: pd.DataFrame, title: 
         cb.set_label(f"similarity ({'Fisher z' if value == 'z' else value})", fontsize=7)
         cb.ax.tick_params(labelsize=6)
     return im
+
+
+# =====================================================
+# brain maps on the inflated cortex (template feature selection)
+# =====================================================
+
+SURF_VIEWS = (("left", "ventral"), ("left", "lateral"), ("right", "ventral"), ("right", "lateral"))
+
+
+def draw_surface_rows(fig, spec, rows: list, views=SURF_VIEWS, threshold=None, vmax=None, cmap="cold_hot", vmin=None,
+                      symmetric=True, cbar_label=""):
+    """MNI volumes on fsaverage5 (bundled with nilearn, so no download): each map is sampled between the
+    white and pial surfaces and drawn on the inflated surface. Per (heading, img) in rows: a heading line,
+    then one panel per (hemisphere, view), then one colour bar for the row (no threshold ticks, so the
+    tick labels never collide)."""
+    import matplotlib as mpl
+    from nilearn import datasets, plotting, surface
+
+    fs = datasets.fetch_surf_fsaverage("fsaverage5")
+    vmin = -vmax if vmin is None and symmetric else vmin
+    cmap_obj = mpl.colormaps[cmap] if cmap in mpl.colormaps else getattr(plotting.cm, cmap)
+    grid = spec.subgridspec(2 * len(rows), len(views) + 1, height_ratios=[0.16, 1] * len(rows),
+                            width_ratios=[1] * len(views) + [0.06], hspace=0.12, wspace=0.02)
+    for r, (heading, img) in enumerate(rows):
+        hax = fig.add_subplot(grid[2 * r, :])
+        hax.axis("off")
+        hax.text(0, 0.0, heading, fontsize=9, weight="bold", va="bottom", ha="left", transform=hax.transAxes)
+        tex = {h: np.nan_to_num(surface.vol_to_surf(img, fs[f"pial_{h}"], inner_mesh=fs[f"white_{h}"]))
+               for h in {h for h, _ in views}}
+        for c, (h, view) in enumerate(views):
+            ax = fig.add_subplot(grid[2 * r + 1, c], projection="3d")
+            plotting.plot_surf_stat_map(fs[f"infl_{h}"], tex[h], hemi=h, view=view, bg_map=fs[f"sulc_{h}"],
+                                        threshold=threshold, vmax=vmax, vmin=vmin, cmap=cmap,
+                                        symmetric_cbar=symmetric, colorbar=False, axes=ax, figure=fig)
+            ax.set_title(f"{h} {view}", fontsize=7, pad=0, y=0.92)
+        cax = fig.add_subplot(grid[2 * r + 1, -1])
+        cb = fig.colorbar(mpl.cm.ScalarMappable(mpl.colors.Normalize(vmin, vmax), cmap_obj), cax=cax)
+        cb.ax.tick_params(labelsize=7)
+        if cbar_label:
+            cb.set_label(cbar_label, fontsize=7)

@@ -3,9 +3,9 @@
 Stage 1b: validate an RSA config against the master spreadsheet before any heavy lifting.
 
 Errors (exit 1):
-  - events.hierarchy columns missing, levels that don't nest (an exemplar under two
-    categories), item rows lacking a hierarchy value, values that collide as file names
-  - an RDM row (e.g. exemplar) with no items for a requested subject
+  - events.hierarchy columns missing, levels that don't nest (an item under two
+    categories), item-instance rows lacking a hierarchy value, values that collide as file names
+  - an RDM row (e.g. item) with no item instances for a requested subject
   - unknown pattern_estimation / rdm / comparison / group method names
   - model_rdms naming a level that isn't coarser than the RDM rows, incomplete groups /
     features, missing or mis-sized matrix files
@@ -13,7 +13,7 @@ Errors (exit 1):
   - cross-validated RDM methods with a row present in fewer than 2 runs
 Warnings:
   - item_types / baseline_types that never occur
-  - RDM rows with unequal numbers of runs or items across subjects
+  - RDM rows with unequal numbers of runs or item instances across subjects
 
 Usage:
     python utils/validate_rsa_config.py --config tutorial/config-haxby-rsa.example.json
@@ -29,11 +29,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
-    COMPARISON_METHODS, GLM_OUTPUT_TYPES, GROUP_TESTS, ITEM_LEVEL, NOISE_METHODS, PATTERN_METHODS,
+    COMPARISON_METHODS, GLM_OUTPUT_TYPES, GROUP_TESTS, INSTANCE_LEVEL, NOISE_METHODS, PATTERN_METHODS,
     RDM_METHODS, RDM_METHODS_NEEDING_CV, check_glm_options, check_hierarchy, format_pattern, hierarchy,
     label_events, load_config, rdm_level, read_master_spreadsheet, resolve_rows, row_names,
     validate_model_rdms, validate_query_node,
-    validate_weighted_models, ANALYSES, FEATURE_LEVELS, EXEMPLAR_CONTRASTS, TARGET_MODES, evaluate_query_node,
+    validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_MODES, evaluate_query_node,
     roi_source_path, validate_roi, validate_window, EXTRA_SET_LEVELS, POSTHOC_GROUP_KEYS, POSTHOC_TARGET_KEYS,
     CV_STRATEGIES, VALIDATION_METHODS, COMPARISON_SETS, overlay_query,
 )
@@ -79,19 +79,19 @@ def validate_rdm(cfg: dict, df, subjects: list):
 
     level = rdm_level(cfg)
     labeled = label_events(df, cfg)
-    items = labeled[labeled["role"] == "item"]
+    instances = labeled[labeled["role"] == "item_instance"]
     missing_subjects = sorted(set(subjects) - set(labeled["subject"]))
-    counts = items.groupby(["subject", level]).agg(n_items=("event_index", "size"), n_runs=("run_id", "nunique"))
+    counts = instances.groupby(["subject", level]).agg(n_instances=("event_index", "size"), n_runs=("run_id", "nunique"))
     for row in row_names(cfg):
         for sub in subjects:
             if sub in missing_subjects:
                 continue
             if (sub, row) not in counts.index:
-                errors.append(f"{level} {row!r} has no items for subject {sub}")
+                errors.append(f"{level} {row!r} has no item instances for subject {sub}")
             elif rdm["method"] in RDM_METHODS_NEEDING_CV and counts.loc[(sub, row), "n_runs"] < 2:
                 errors.append(f"{level} {row!r} appears in <2 runs for subject {sub}; "
                               f"rdm.method={rdm['method']!r} needs >=2 {rdm.get('cv_descriptor', 'run')} folds")
-    for col in ("n_items", "n_runs"):
+    for col in ("n_instances", "n_runs"):
         per_row = counts[col].groupby(level).nunique()
         for row in per_row[per_row > 1].index:
             warnings.append(f"{level} {row!r} has unequal {col} across subjects: "
@@ -105,14 +105,14 @@ def validate_template(cfg: dict, df, subjects: list):
     from workflows.template_rsa import target_specs
 
     errors, warnings = [], []
-    from workflows.template_rsa import exemplar_column, template_levels
+    from workflows.template_rsa import item_column, template_levels
 
     columns = set(df.columns)
     tr = cfg["template_rsa"]
     levels = hierarchy(cfg)
     if not levels:
-        return ["events.hierarchy: list the events.tsv columns that identify exemplars, coarse -> fine; template "
-                "RSA uses its finest level as the exemplar"], warnings
+        return ["events.hierarchy: list the events.tsv columns that identify items, coarse -> fine; template "
+                "RSA uses its finest level as the item"], warnings
     missing = [c for c in levels if c not in columns]
     if missing:
         return [f"events.hierarchy: column(s) {missing} not in master spreadsheet"], warnings
@@ -123,7 +123,7 @@ def validate_template(cfg: dict, df, subjects: list):
     for key in ("category_level", "subcategory_level"):
         if tr.get(key) and tr[key] not in levels[:-1]:
             errors.append(f"template_rsa.{key}: {tr[key]!r} must be a level of events.hierarchy coarser than the "
-                          f"exemplar level ({levels[:-1]})")
+                          f"item level ({levels[:-1]})")
     category, subcategory = template_levels(cfg)
     if not tr["templates"].get("events"):
         errors.append("template_rsa.templates.events: query selecting the template-phase events is required")
@@ -134,10 +134,10 @@ def validate_template(cfg: dict, df, subjects: list):
     bad = set(fw["levels"]) - FEATURE_LEVELS
     if bad or not fw["levels"]:
         errors.append(f"template_rsa.feature_weighting.levels: must be a non-empty subset of {sorted(FEATURE_LEVELS)}")
-    if fw["exemplar_contrast"] not in EXEMPLAR_CONTRASTS:
-        errors.append(f"template_rsa.feature_weighting.exemplar_contrast must be one of {sorted(EXEMPLAR_CONTRASTS)}")
-    if fw["exemplar_contrast"] == "within_subcategory" and not subcategory:
-        errors.append("exemplar_contrast 'within_subcategory' needs template_rsa.subcategory_level")
+    if fw["item_contrast"] not in ITEM_CONTRASTS:
+        errors.append(f"template_rsa.feature_weighting.item_contrast must be one of {sorted(ITEM_CONTRASTS)}")
+    if fw["item_contrast"] == "within_subcategory" and not subcategory:
+        errors.append("item_contrast 'within_subcategory' needs template_rsa.subcategory_level")
     if fw["category_mask"].get("events"):
         errors.extend(validate_query_node(fw["category_mask"]["events"], columns, "feature_weighting.category_mask.events"))
     for roi in tr["rois"] or []:
@@ -168,7 +168,7 @@ def validate_template(cfg: dict, df, subjects: list):
         return errors, warnings
 
     tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
-    item_col = exemplar_column(cfg)
+    item_col = item_column(cfg)
     for name, spec in (target_specs(cfg).items() if fidelity else []):
         path = f"template_rsa.targets.{name}"
         if spec["mode"] not in TARGET_MODES:
@@ -196,7 +196,7 @@ def validate_template(cfg: dict, df, subjects: list):
         if moved:
             errors.append(f"{path}: {moved} are study-specific post-hoc settings and are no longer part of the "
                           "core config -- do them in a post-hoc notebook (_interactive_notebooks/; see "
-                          "docs/lab_methods.md). extra_item_columns is now extra_sets {name: {column, level: exemplar}}")
+                          "docs/lab_methods.md). extra_item_columns is now extra_sets {name: {column, level: item}}")
         for xname, xs in spec["extra_sets"].items():
             if not isinstance(xs, dict) or xs.get("column") not in columns:
                 errors.append(f"{path}.extra_sets.{xname}.column: {xs.get('column') if isinstance(xs, dict) else xs!r} "
@@ -252,13 +252,13 @@ def validate_template(cfg: dict, df, subjects: list):
             elif not k_items:
                 errors.append(f"template_rsa.templates.events: no template events for subject {sub}")
             elif t_items - k_items:
-                warnings.append(f"{path}: sub-{sub} has {len(t_items - k_items)} target exemplar(s) without a template "
+                warnings.append(f"{path}: sub-{sub} has {len(t_items - k_items)} target item(s) without a template "
                                 f"(skipped), e.g. {sorted(t_items - k_items)[:3]}")
     methods = (val.get("methods") or []) if val["enabled"] else []
     runs_per_item = tmpl.groupby(["subject", item_col])["run_id"].nunique()
     if "kim2020" in methods and len(runs_per_item) and runs_per_item.max() < 2:
-        warnings.append("template_rsa.validation: every exemplar has template events in a single run, so kim2020 "
-                        "validation (presentation x presentation across runs) will be skipped (validate with a "
+        warnings.append("template_rsa.validation: every item has template events in a single run, so kim2020 "
+                        "validation (item instance x item instance across runs) will be skipped (validate with a "
                         "target set instead)")
     runs_per_subject = tmpl.groupby("subject")["run_id"].nunique()
     if "cv" in methods and len(runs_per_subject) and runs_per_subject.min() < 2:
@@ -348,15 +348,15 @@ def main():
         labeled = label_events(df, cfg)
         print("Event roles: " + ", ".join(f"{k} {v}" for k, v in labeled["role"].value_counts().items())
               + f", baseline {len(df) - len(labeled)}")
-        summary = labeled[labeled["role"] == "item"].groupby(level).agg(
-            subjects=("subject", "nunique"), runs=("run_id", "nunique"), items=("event_index", "size"))
+        summary = labeled[labeled["role"] == "item_instance"].groupby(level).agg(
+            subjects=("subject", "nunique"), runs=("run_id", "nunique"), item_instances=("event_index", "size"))
         print(f"RDM rows ({level}):\n" + summary.reindex(row_names(cfg)).to_string())
     if "template" in analyses:
-        from workflows.template_rsa import exemplar_column, target_specs
+        from workflows.template_rsa import item_column, target_specs
         tr = cfg["template_rsa"]
         tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
         rows = {"template events": tmpl.groupby("subject").size(),
-                "template exemplars": tmpl.groupby("subject")[exemplar_column(cfg)].nunique()}
+                "template items": tmpl.groupby("subject")[item_column(cfg)].nunique()}
         for name, spec in (target_specs(cfg).items() if "fidelity" in analyses else []):
             rows[f"{name} events"] = df[evaluate_query_node(spec["events"], df)].groupby("subject").size()
         print("Template RSA (per subject):\n" + pd.DataFrame(rows).fillna(0).astype(int).to_string())

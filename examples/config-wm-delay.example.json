@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "SKELETON for a delayed-recall working-memory task (see docs/working_memory_rsa.md): events.tsv has one row per trial phase (trial_type = encoding | delay | probe), a 'stimulus' column (here 4 orientations) and a 'phase_stimulus' column naming the phase x stimulus exemplar (encoding_0 ... delay_135), so the hierarchy trial_type > phase_stimulus nests. One crossnobis RDM then contains the within-encoding, within-delay and encoding-vs-delay blocks. Incorrect trials fail item_filter and, like the probes, are modeled as nuisance regressors. Stimulus identity crosses the phases, so its model lists explicit groups. Paths and stimulus values are placeholders.",
+  "notes": "SKELETON for a delayed-recall working-memory task (see docs/working_memory_rsa.md): events.tsv has one row per trial phase (trial_type = encoding | delay | probe), a 'stimulus' column (here 4 orientations) and a 'phase_stimulus' column naming the phase x stimulus item (encoding_0 ... delay_135), so the hierarchy trial_type > phase_stimulus nests. One crossnobis RDM then contains the within-encoding, within-delay and encoding-vs-delay blocks. Incorrect trials fail item_filter and, like the probes, are modeled as nuisance regressors. Stimulus identity crosses the phases, so its model lists explicit groups. Paths and stimulus values are placeholders.",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",

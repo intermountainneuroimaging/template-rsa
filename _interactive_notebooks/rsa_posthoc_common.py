@@ -11,8 +11,8 @@ The notebooks start from that table; nothing here knows about any particular stu
   loading         load_config, load_scores (the group raw table), load_master (the event table),
                   load_validation
   table helpers   add_previous_trial_columns (trial N-1 columns, e.g. for N+1 analyses),
-                  join_exemplar_columns (copy a column from another phase by exemplar, e.g. the
-                  operation onto post-test exemplars), event_table (one row per event)
+                  join_item_columns (copy a column from another phase by item, e.g. the
+                  operation onto post-test items), event_table (one row per event)
   aggregation     subject_means (trials -> subject means), baseline_correct, subtract_reference,
                   summarize (mean / SEM / n over subjects)
   statistics      make_bins, bin_means, one_sample_by_bin, compare_groups_by_bin (rm ANOVA + pairwise),
@@ -86,7 +86,7 @@ def load_master(cfg: dict) -> pd.DataFrame:
 
 
 def load_validation(cfg: dict, roi: str) -> pd.DataFrame:
-    path = os.path.join(cfg["pipeline"]["output_dir"], "group", "template_rsa", f"roi-{roi}_template-validation.csv")
+    path = os.path.join(cfg["pipeline"]["output_dir"], "group", "templates", f"roi-{roi}_template-validation.csv")
     return pd.read_csv(path, dtype={"subject": str}) if os.path.isfile(path) else None
 
 
@@ -120,11 +120,11 @@ def add_previous_trial_columns(df: pd.DataFrame, columns, matches: dict = None) 
     return df.drop(columns=drop).merge(out, on=EVENT_KEY, how="left")
 
 
-def join_exemplar_columns(df: pd.DataFrame, master: pd.DataFrame, source_query, item_col: str, columns,
+def join_item_columns(df: pd.DataFrame, master: pd.DataFrame, source_query, item_col: str, columns,
                           keep_existing: bool = True) -> pd.DataFrame:
     """Copy `columns` from the events matching source_query (e.g. the manipulation phase) onto the
-    rows of df by subject and exemplar (`item_col`: the exemplar column, e.g. "stimulus"). An
-    exemplar seen several times in the source takes its first occurrence (by run, onset). With
+    rows of df by subject and item (`item_col`: the item column, e.g. "stimulus"). An
+    item seen several times in the source takes its first occurrence (by run, onset). With
     keep_existing, values df already has are not overwritten."""
     src = master[evaluate_query_node(source_query, master)] if source_query else master
     src = src.sort_values(["subject", "run_id", "onset"]).assign(**{item_col: lambda d: d[item_col].astype(str)})

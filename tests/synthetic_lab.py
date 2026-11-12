@@ -1,17 +1,17 @@
 """Synthetic dataset shaped like the lab's designs (Kim et al. 2020 + Bretton et al. 2024), with the
 events.tsv schema the lab configs and post-hoc notebooks assume:
 
-  localizer   template phase: 12 exemplars (2 categories x 2 subcategories x 3), once per run, 3 runs
+  localizer   template phase: 12 items (2 categories x 2 subcategories x 3), once per run, 3 runs
   study       WM phase, trial_type "stimulus" at trial onset, operation maintain / replace_category /
-              suppress; maintain keeps the exemplar active 6 s after the 2 s stimulus, replace_category
-              brings an exemplar of the other category (named in replace_category) to mind instead,
+              suppress; maintain keeps the item active 6 s after the 2 s stimulus, replace_category
+              brings an item of the other category (named in replace_category) to mind instead,
               suppress does neither; 2 runs
-  postmemory  post-test: the 12 old exemplars plus 4 new ones (no template); old ones answered
+  postmemory  post-test: the 12 old items plus 4 new ones (no template); old ones answered
               old/sure ("remembered") come back strongly, the rest weakly; response / confidence columns
 
-Every stimulus row carries the hierarchy category > subcategory > stimulus (exemplar).
-Exemplar patterns = category pattern (each category in its own half of the ROI) + subcategory
-pattern + exemplar-specific pattern. A label image (value 7 everywhere) serves as an atlas ROI."""
+Every stimulus row carries the hierarchy category > subcategory > stimulus (item).
+Item patterns = category pattern (each category in its own half of the ROI) + subcategory
+pattern + item-specific pattern. A label image (value 7 everywhere) serves as an atlas ROI."""
 
 import json
 
@@ -134,7 +134,7 @@ def make_config(root, **template_overrides) -> dict:
             "timeseries": {"high_pass": 0.01},
             "templates": {"events": q("task", "localizer"), "window": lag()},
             "validation": {"methods": ["kim2020", "cv"], "cross_validation": {"strategy": "per_run"}},
-            "feature_weighting": {"levels": ["exemplar", "category"],
+            "feature_weighting": {"levels": ["item", "category"],
                                   "category_mask": {"p_threshold": 0.05, "cluster_extent": 5}},
             "targets": {
                 "study_timecourse": {

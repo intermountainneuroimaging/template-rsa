@@ -17,7 +17,7 @@ examples/clearvale/
 │   ├── audit_stim.py                # audit of every session's PsychoPy logs (feeds analysis_deviations.md)
 │   ├── make_confounds.py            # motion parameters + framewise displacement for the GLMs / censoring
 │   ├── make_brain_mask.py           # aparc+aseg brain mask on the BOLD grid (traditional RDM config only)
-│   ├── fig_template_matching.py     # methods figure: how one presentation is matched to every template
+│   ├── fig_template_matching.py     # methods figure: how one item instance is matched to every template
 │   └── compare_traditional_rdm.py   # template RSA vs. traditional RDM on one subject
 ├── notebooks/
 │   ├── 01_download_from_flywheel.ipynb     # one subject's stim files + preprocessed outputs

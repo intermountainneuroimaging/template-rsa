@@ -119,14 +119,14 @@ For VT, weights fit on all subjects are: animacy 0.86, superordinate 0.45, intac
 
 `config-haxby-rsa-lss.example.json` (`pattern_estimation.level: "item"`) estimates one pattern per block (each block is one item) with least-squares-separate GLMs and then averages a category's blocks in the RDM. Haxby has exactly one block per category per run, so with `lss_other: "by_label"` each LSS design contains the same regressors as the per-run GLM. The two must therefore give identical patterns.
 
-They do: the RDMs from the two configs match to floating-point precision for every subject and ROI. This confirms that the LSS path (masking, scaling, design matrices, contrasts) matches nilearn's `FirstLevelModel`. A dataset with an exemplar repeated within a run, or `lss_other: "single"`, would give different estimates.
+They do: the RDMs from the two configs match to floating-point precision for every subject and ROI. This confirms that the LSS path (masking, scaling, design matrices, contrasts) matches nilearn's `FirstLevelModel`. A dataset with an item repeated within a run, or `lss_other: "single"`, would give different estimates.
 
 ## Check 5: the lab's template RSA (docs/lab_methods.md)
 
-[config-haxby-template.example.json](config-haxby-template.example.json) runs the feature-weighted template-matching method of Kim et al. (2020) and Bretton et al. (2024). Haxby has no repeated exemplars, so its 8 categories play the role of exemplars (the config's hierarchy is just `["category"]`).
+[config-haxby-template.example.json](config-haxby-template.example.json) runs the feature-weighted template-matching method of Kim et al. (2020) and Bretton et al. (2024). Haxby has no repeated items, so its 8 categories play the role of items (the config's hierarchy is just `["category"]`).
 
 - **Templates:** odd runs, with a 4 s lag.
-- **Weighting:** exemplar-vs-others LSA t-maps within each exemplar's category mask (p < .05, k ≥ 10) inside VT.
+- **Weighting:** item-vs-others LSA t-maps within each item's category mask (p < .05, k ≥ 10) inside VT.
 - **Targets:** even-run blocks, scored as window means and as a 30 s timecourse.
 
 ```bash
@@ -135,7 +135,7 @@ python workflows/run_pipeline.py --config tutorial/config-haxby-template.example
 
 Results:
 
-- **Window means:** held-out target − others is 0.54 Fisher z with exemplar-weighted templates and 0.30 unweighted (n = 6, both p < .001). Feature weighting nearly doubles exemplar discriminability, which is the papers' rationale for it.
+- **Window means:** held-out target − others is 0.54 Fisher z with item-weighted templates and 0.30 unweighted (n = 6, both p < .001). Feature weighting nearly doubles item discriminability, which is the papers' rationale for it.
 - **Template validation:** leave-one-block-out target z is 0.70 vs. 0.11 for others.
 - **Timecourse:** rises about 5 s after block onset, plateaus over the block, and falls below zero after it.
 - **Category masks:** with an 8-way category contrast, 3–4 of the 8 masks per subject are too small and fall back to the whole ROI. The run log and `*_feature-selection.csv` flag this.

@@ -10,7 +10,7 @@ post-hoc notebooks in _interactive_notebooks/, which start from the raw table wr
   subject means  target events averaged within subject per level x comparison x group_by [x TR]
   summary        mean / SEM / n over subjects of the subject means
   sanity check   paired t-tests between the comparison sets (target vs related vs others, ...) per
-                 level x group_by [averaged over TRs], FDR across pairs: is exemplar information there?
+                 level x group_by [averaged over TRs], FDR across pairs: is item information there?
 
 Outputs (under <output_dir>/group/fidelity/):
   raw/roi-<roi>_target-<set>_scores.csv
@@ -32,7 +32,7 @@ from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
-    evaluate_query_node, load_config, overlay_labels, read_master_spreadsheet, resolve_overlay_styles, safe_name,
+    evaluate_query_node, group_stage_dir, load_config, overlay_labels, read_master_spreadsheet, resolve_overlay_styles, safe_name,
 )
 from utils.rsa_plots import plot_template_bars, plot_template_timecourse
 from workflows.group_rsa import correct
@@ -176,7 +176,7 @@ def window_length(window: dict) -> float:
 
 
 def group_fidelity(cfg: dict, output_dir: str, subjects=None):
-    out_dir = os.path.join(output_dir, "group", "fidelity")
+    out_dir = group_stage_dir(output_dir, "fidelity")
     raw_dir = os.path.join(out_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
     sheet = cfg["event_extraction"]["output_file"]

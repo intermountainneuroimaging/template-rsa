@@ -2,27 +2,27 @@
 """
 Stage 2: estimate activity patterns (3D images) for one subject.
 
-Each event's role comes from the events table (rsa_common.label_events): items (events of
+Each event's role comes from the events table (rsa_common.label_events): item instances (events of
 interest, with a value at every events.hierarchy level), nuisance events (their own regressor
 per trial_type, so they don't leak into the implicit baseline; `model_unlabeled_events`), and
 baseline events (events.baseline_types; left unmodeled).
 
 pattern_estimation.level -- what one pattern is:
-  "item"                one pattern per item (event of interest)
-  <a hierarchy level>   one pattern per value of that level per run, pooling its items
-                        (e.g. "exemplar": an exemplar's repeats; "category": all its exemplars)
+  "item_instance"       one pattern per item instance (event of interest)
+  <a hierarchy level>   one pattern per value of that level per run, pooling its item instances
+                        (e.g. "item": an item's repeats; "category": all its items)
 
 pattern_estimation.method:
   "glm"            nilearn GLM fit per run. A pooled level models each value as one regressor.
-                   level "item" gives one pattern per item, from one GLM with every item as its
-                   own regressor (glm.item_model="lsa") or from one GLM per item
+                   level "item_instance" gives one pattern per item instance, from one GLM with every
+                   instance as its own regressor (glm.item_model="lsa") or from one GLM per instance
                    (glm.item_model="lss", least-squares-separate). Saves t / z / beta maps
                    (`glm.output_type`).
   "volume_average" Cleans each run (confound regression, detrend, band-pass filter,
                    standardize, optional smoothing -- all in one nilearn signal.clean
-                   pass), then averages the volumes spanned by each item, shifted by
+                   pass), then averages the volumes spanned by each item instance, shifted by
                    `hemodynamic_lag` (same volume math as mvpa-decoding), and pools them per
-                   level value within run (or keeps them per item).
+                   level value within run (or keeps them per item instance).
 
 The estimation itself is the shared betaestimation package (betaestimation.estimate /
 .glm / .nuisance), so mvpa-decoding and rsaworkflow fit identical models.
@@ -41,10 +41,10 @@ All runs of a subject share one brain mask (pattern_estimation.mask_pattern -- i
 pattern matches several files, e.g. fMRIPrep's per-run brain masks, their intersection --
 or an EPI mask computed from the first run), so every pattern has the same voxels.
 
-Outputs (under <output_dir>/sub-<subject>/patterns/):
+Outputs (under <output_dir>/sub-<subject>/rdm/patterns/):
   sub-<s>_..._<level>-<value>[_event-<n>]_stat-<stat>_pattern.nii.gz
   sub-<s>_patterns.csv   -- index consumed by rsa_workflow.py: one row per pattern, with the
-                            hierarchy columns down to the RDM level (+ event_index for items)
+                            hierarchy columns down to the RDM level (+ event_index for item instances)
   sub-<s>_run-qc.csv     -- per run: volumes flagged/censored, number of confounds, FD
 
 Usage:
@@ -63,7 +63,7 @@ from betaestimation.masks import brain_mask
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.preprocessing import run_nuisance
 from utils.rsa_common import (
-    ITEM_LEVEL, coarser_levels, format_pattern, label_events, load_config, pattern_index_path, pattern_level,
+    INSTANCE_LEVEL, coarser_levels, format_pattern, label_events, load_config, pattern_index_path, pattern_level,
     rdm_level, read_master_spreadsheet, safe_name,
 )
 
@@ -86,9 +86,9 @@ def resolve_subject_mask(cfg: dict, subject: str, first_bold: str, out_dir: str)
 
 
 def run_events(run_df: pd.DataFrame, level: str) -> pd.DataFrame:
-    """The run's events in betaestimation's form: label = the item's value at the RDM level
+    """The run's events in betaestimation's form: label = the item instance's value at the RDM level
     (NaN for nuisance events), event_id = event_index."""
-    label = run_df[level].where(run_df["role"] == "item")
+    label = run_df[level].where(run_df["role"] == "item_instance")
     return pd.DataFrame({"onset": run_df["onset"].astype(float).values, "duration": run_df["duration"].astype(float).values,
                          "trial_type": run_df["trial_type"].values, "label": label.values,
                          "event_id": run_df["event_index"].astype(int).values})
@@ -99,8 +99,8 @@ def estimate_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str)
     level, row_level = pattern_level(cfg), rdm_level(cfg)
     columns = coarser_levels(cfg, row_level) + [row_level]
     sub_df = label_events(df[df["subject"] == subject], cfg)
-    if not (sub_df["role"] == "item").any():
-        raise SystemExit(f"subject {subject}: no item events (see events.hierarchy / item_types)")
+    if not (sub_df["role"] == "item_instance").any():
+        raise SystemExit(f"subject {subject}: no item-instance events (see events.hierarchy / item_types)")
 
     index_path = pattern_index_path(output_dir, subject)
     out_dir = os.path.dirname(index_path)
@@ -110,20 +110,20 @@ def estimate_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str)
 
     rows, qc_rows = [], []
     for boldfile, run_df in sub_df.groupby("boldfile", sort=True):
-        n_items = int((run_df["role"] == "item").sum())
-        if n_items == 0:
+        n_instances = int((run_df["role"] == "item_instance").sum())
+        if n_instances == 0:
             continue
         first = run_df.iloc[0]
         nuisance = run_nuisance(pe, run_df)
         qc_rows.append(nuisance.qc)
         flagged = f", {nuisance.qc['n_flagged']} vol flagged ({nuisance.qc['censoring']})" if nuisance.qc["n_flagged"] else ""
-        print(f"  run {first['run_id']}: {n_items} item(s) [{pe['method']}, level {level}], "
+        print(f"  run {first['run_id']}: {n_instances} item instance(s) [{pe['method']}, level {level}], "
               f"{nuisance.qc['n_confounds']} confound(s){flagged}")
         stem = os.path.basename(boldfile).split("_desc-")[0].split("_bold")[0]
-        parents = run_df[run_df["role"] == "item"].drop_duplicates(row_level).set_index(row_level)[columns[:-1]]
+        parents = run_df[run_df["role"] == "item_instance"].drop_duplicates(row_level).set_index(row_level)[columns[:-1]]
         patterns = estimate_run_patterns(
             boldfile, run_events(run_df, row_level), float(first["tr"]), int(first["n_frames"]), mask_img, nuisance,
-            method=pe["method"], unit="item" if level == ITEM_LEVEL else "pooled", glm=pe["glm"],
+            method=pe["method"], unit="item" if level == INSTANCE_LEVEL else "pooled", glm=pe["glm"],
             volume_average=pe["volume_average"], model_unlabeled_events=pe["model_unlabeled_events"])
         for est in patterns:
             value, n_events, img = est.label, est.n_events, est.img

@@ -14,7 +14,7 @@ per subject and session:
                              (make_events.stimulus_id -- these are fine after conversion)
               unmatched      still missing: the closest localizer name is reported (difflib)
             and images whose category or valence disagrees between runs / tasks
-  counts    localizer presentations per image (expect 3, one per run); WM views per image (expect 4);
+  counts    localizer item instances per image (expect 3, one per run); WM views per image (expect 4);
             localizer trials without a rating response
   switch    switch words with no unique localizer item image (make_events.switch_map)
   last WM trial   a final trial with timing but blank labels is recovered as make_events does and

@@ -10,7 +10,7 @@ run the same stages as separate jobs).
   4  group        group_rsa.py
   3t template     template_rsa.py        (per subject; templates + validation, Kim et al. 2020)
   4t template_group group_template_rsa.py
-  3f fidelity       template_fidelity.py   (per subject; each target event vs. its own exemplar's template)
+  3f fidelity       template_fidelity.py   (per subject; each target event vs. its own item's template)
   4f fidelity_group group_fidelity.py
   5  report       generate_report.py     (group PDF)
 

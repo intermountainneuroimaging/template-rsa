@@ -13,7 +13,7 @@ Stage 4: group-level RSA for every ROI.
     p-values are corrected across models within ROI (group.multiple_comparisons, any
     statsmodels.multipletests method, or "none").
 
-Outputs (under <output_dir>/group/):
+Outputs (under <output_dir>/group/rdm/):
   roi-<roi>/group_roi-<roi>_mean-rdm.{csv,png}, _mds.png, _models.png, _pairwise.csv
   roi-<roi>/group_roi-<roi>_mean-pattern-rdm.{csv,png}  (subjects' pattern-level RDMs averaged,
                                                          patterns matched by row and position in block)
@@ -33,14 +33,14 @@ import pandas as pd
 from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import build_model_rdms, build_weighted_models, load_config, rdm_level, row_names
+from utils.rsa_common import build_model_rdms, build_weighted_models, group_stage_dir, load_config, rdm_level, row_names
 from utils.rsa_plots import plot_mds, plot_models, plot_pattern_rdm, plot_rdm, plot_weights
 
 
 def load_subject_rdms(output_dir: str, roi: str, items: list, level: str, subjects=None):
     import rsatoolbox
 
-    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", f"roi-{roi}", f"sub-*_roi-{roi}_rdm.hdf5")))
+    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rdm", f"roi-{roi}", f"sub-*_roi-{roi}_rdm.hdf5")))
     rdms = [rsatoolbox.rdm.load_rdm(p, file_type="hdf5") for p in paths]
     if subjects:
         rdms = [r for r in rdms if r.rdm_descriptors["subject"][0] in subjects]
@@ -66,7 +66,7 @@ def mean_pattern_rdm(output_dir: str, roi: str, subjects=None):
     and missing runs differ between subjects; each row keeps as many patterns as the subject
     with the fewest has. A visualization of the shared block structure, not a test.
     Returns (frame labelled '<row>|k', n_subjects) or (None, 0)."""
-    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", f"roi-{roi}", f"sub-*_roi-{roi}_pattern-rdm.csv")))
+    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rdm", f"roi-{roi}", f"sub-*_roi-{roi}_pattern-rdm.csv")))
     if subjects:
         paths = [p for p in paths if os.path.basename(p).split("_")[0][4:] in subjects]
     frames = [pd.read_csv(p, index_col=0) for p in paths]
@@ -243,12 +243,12 @@ def crossval_stats(data_rdms, model_rdms, cfg):
 def group_rsa(cfg: dict, output_dir: str, subjects=None) -> pd.DataFrame:
     items, level = row_names(cfg), rdm_level(cfg)
     method = cfg["comparison"]["method"]
-    sub_tables = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rsa", "sub-*_model-comparison.csv")))
+    sub_tables = sorted(glob.glob(os.path.join(output_dir, "sub-*", "rdm", "sub-*_model-comparison.csv")))
     sims_long = pd.concat([pd.read_csv(p, dtype={"subject": str}) for p in sub_tables], ignore_index=True) \
         if sub_tables else pd.DataFrame()
     if subjects and len(sims_long):
         sims_long = sims_long[sims_long["subject"].isin(subjects)]
-    group_dir = os.path.join(output_dir, "group")
+    group_dir = group_stage_dir(output_dir, "rdm")
     os.makedirs(group_dir, exist_ok=True)
 
     summaries = []

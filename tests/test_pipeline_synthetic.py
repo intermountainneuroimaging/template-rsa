@@ -1,5 +1,5 @@
 """End-to-end run of stages 1-4 on a tiny synthetic BIDS dataset with a known
-representational geometry: exemplars a and b share most of their pattern, c is
+representational geometry: items a and b share most of their pattern, c is
 unrelated. The events carry the hierarchy group > stim (a, b in group "ab"; c in "c"); the
 "ab_vs_c" model (the group level) should fit the data RDM; a crossed grouping should not."""
 
@@ -77,8 +77,8 @@ def make_config(root, method, rdm_method, level=None, item_model="lss"):
     ("volume_average", "correlation", None, None),
     ("glm", "correlation", "stim", None),
     ("glm", "crossnobis", None, None),
-    ("glm", "correlation", "item", "lss"),
-    ("glm", "correlation", "item", "lsa"),
+    ("glm", "correlation", "item_instance", "lss"),
+    ("glm", "correlation", "item_instance", "lsa"),
 ])
 def test_pipeline_recovers_geometry(tmp_path, method, rdm_method, level, item_model):
     make_dataset(tmp_path)
@@ -93,12 +93,12 @@ def test_pipeline_recovers_geometry(tmp_path, method, rdm_method, level, item_mo
         index = estimate_subject(cfg, df, sub, out)
         assert len(index) == 4 * 3
         assert {"group", "stim"} <= set(index.columns)
-        if level == "item":
+        if level == "item_instance":
             assert index["event_index"].notna().all()
         res = rsa_subject(cfg, sub, out).set_index("model")["similarity"]
-        pattern = pd.read_csv(f"{out}/sub-{sub}/rsa/roi-all/sub-{sub}_roi-all_pattern-rdm.csv", index_col=0)
+        pattern = pd.read_csv(f"{out}/sub-{sub}/rdm/roi-all/sub-{sub}_roi-all_pattern-rdm.csv", index_col=0)
         assert len(pattern) == len(index)  # one row per pattern, nothing averaged
-        assert [label.split("|")[0] for label in pattern.index] == sorted(index["stim"])  # grouped by exemplar
+        assert [label.split("|")[0] for label in pattern.index] == sorted(index["stim"])  # grouped by item
         same = np.equal.outer(*[np.array([label.split("|")[0] for label in pattern.index])] * 2)
         off = ~np.eye(len(pattern), dtype=bool)
         assert pattern.values[same & off].mean() < pattern.values[~same].mean()
@@ -106,14 +106,14 @@ def test_pipeline_recovers_geometry(tmp_path, method, rdm_method, level, item_mo
         assert res["ab_vs_c"] > res["wrong"]
 
     summary = group_rsa(cfg, out).set_index("model")
-    assert os.path.exists(f"{out}/group/roi-all/group_roi-all_mean-pattern-rdm.csv")
+    assert os.path.exists(f"{out}/group/rdm/roi-all/group_roi-all_mean-pattern-rdm.csv")
     assert summary.loc["ab_vs_c", "p"] < 0.05
     assert summary.loc["ab_vs_c", "noise_ceiling_upper"] >= summary.loc["ab_vs_c", "noise_ceiling_lower"]
 
-    cv = pd.read_csv(f"{out}/group/roi-all/group_roi-all_crossval.csv").set_index("model")
+    cv = pd.read_csv(f"{out}/group/rdm/roi-all/group_roi-all_crossval.csv").set_index("model")
     assert cv.loc["both", "kind"] == "weighted" and cv.loc["both", "n_folds"] == 3
     assert cv.loc["both", "mean"] > 0.8
-    weights = pd.read_csv(f"{out}/group/roi-all/group_roi-all_weights.csv").set_index("component")["weight"]
+    weights = pd.read_csv(f"{out}/group/rdm/roi-all/group_roi-all_weights.csv").set_index("component")["weight"]
     assert weights["ab_vs_c"] > weights["wrong"]
 
     for report in (generate_report(cfg, out), generate_report(cfg, out, subject="1")):
@@ -132,7 +132,7 @@ def test_pooling_at_a_coarser_level(tmp_path):
     assert len(index) == 4 * 2 and set(index["group"]) == {"ab", "c"} and "stim" not in index
     assert set(index.loc[index["group"] == "ab", "n_events"]) == {2}
     rsa_subject(cfg, "1", cfg["pipeline"]["output_dir"])
-    rdm = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/rsa/roi-all/sub-1_roi-all_rdm.csv", index_col=0)
+    rdm = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/rdm/roi-all/sub-1_roi-all_rdm.csv", index_col=0)
     assert list(rdm.index) == ["ab", "c"]
 
 

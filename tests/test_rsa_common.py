@@ -50,13 +50,13 @@ def test_merge_with_defaults_is_recursive():
 
 
 def _hierarchy_events():
-    """category > subcategory > exemplar; a probe (nuisance), a rest row (baseline), and an
+    """category > subcategory > item; a probe (nuisance), a rest row (baseline), and an
     incorrect trial."""
     return pd.DataFrame({
         "trial_type":  ["stim"] * 6 + ["probe", "rest", "stim"],
         "category":    ["tool", "animal", "animal", "animal", "tool", "animal", None, None, "tool"],
         "subcategory": ["kitchen", "mammal", "bird", "mammal", "kitchen", "bird", None, None, "workshop"],
-        "exemplar":    ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03", None, None, "hammer01"],
+        "item":    ["whisk02", "dog01", "robin03", "dog01", "whisk02", "robin03", None, None, "hammer01"],
         "correct":     ["1"] * 8 + ["0"],
         "event_index": range(1, 10),
     })
@@ -64,7 +64,7 @@ def _hierarchy_events():
 
 def _cfg(model_rdms=None, **events):
     cfg = default_config()
-    cfg["events"].update({"hierarchy": ["category", "subcategory", "exemplar"], "baseline_types": ["rest"], **events})
+    cfg["events"].update({"hierarchy": ["category", "subcategory", "item"], "baseline_types": ["rest"], **events})
     cfg["model_rdms"] = model_rdms or {}
     return cfg
 
@@ -73,7 +73,7 @@ def test_roles_come_from_the_events_table():
     cfg = _cfg(item_filter={"column": "correct", "match": "exact", "value": "1"})
     out = label_events(_hierarchy_events(), cfg)
     assert len(out) == 8  # the rest row is baseline: dropped, left unmodeled
-    assert out["role"].tolist() == ["item"] * 6 + ["nuisance", "nuisance"]  # probe; failed item_filter
+    assert out["role"].tolist() == ["item_instance"] * 6 + ["nuisance", "nuisance"]  # probe; failed item_filter
 
 
 def test_rows_are_ordered_by_the_hierarchy_and_carry_their_parents():
@@ -84,7 +84,7 @@ def test_rows_are_ordered_by_the_hierarchy_and_carry_their_parents():
     cfg["pattern_estimation"]["level"] = "subcategory"
     resolve_rows(cfg, _hierarchy_events())
     assert row_names(cfg) == ["bird", "mammal", "kitchen"]
-    cfg["pattern_estimation"]["level"] = "item"  # item patterns are averaged to exemplars for the RDM
+    cfg["pattern_estimation"]["level"] = "item_instance"  # item-instance patterns are averaged to items for the RDM
     resolve_rows(cfg, _hierarchy_events())
     assert row_names(cfg) == ["robin03", "dog01", "whisk02"]
 
@@ -97,11 +97,11 @@ def test_hierarchy_errors():
     with pytest.raises(SystemExit):
         row_names(_cfg())
     ev = _hierarchy_events()
-    ev.loc[0, "subcategory"] = None  # an item trial_type without a full hierarchy
+    ev.loc[0, "subcategory"] = None  # an item-instance trial_type without a full hierarchy
     assert any("lack a value" in e for e in resolve_rows(_cfg(item_types=["stim"]), ev))
     ev = _hierarchy_events()
-    ev.loc[ev["exemplar"] == "dog01", "exemplar"] = "dog_01"
-    ev.loc[ev["exemplar"] == "robin03", "exemplar"] = "dog01"
+    ev.loc[ev["item"] == "dog01", "item"] = "dog_01"
+    ev.loc[ev["item"] == "robin03", "item"] = "dog01"
     assert any("regressor / file name" in e for e in resolve_rows(_cfg(), ev))
 
 
@@ -118,7 +118,7 @@ def test_categorical_feature_and_file_models(tmp_path):
     rdms = build_model_rdms(cfg)
     mats = rdms.get_matrices()
     assert list(rdms.rdm_descriptors["model"]) == ["category", "crossed", "feat", "file"]
-    assert list(rdms.pattern_descriptors["exemplar"]) == ["robin03", "dog01", "whisk02"]
+    assert list(rdms.pattern_descriptors["item"]) == ["robin03", "dog01", "whisk02"]
     np.testing.assert_allclose(mats[0], [[0, 0, 1], [0, 0, 1], [1, 1, 0]])
     np.testing.assert_allclose(mats[1], [[0, 1, 0], [1, 0, 1], [0, 1, 0]])
     assert mats[2][0, 2] > mats[2][0, 1] > 0
@@ -126,7 +126,7 @@ def test_categorical_feature_and_file_models(tmp_path):
 
 
 def test_model_validation():
-    cfg = _cfg({"same": {"type": "categorical", "level": "exemplar"},
+    cfg = _cfg({"same": {"type": "categorical", "level": "item"},
                 "partial": {"type": "categorical", "groups": {"dog01": "x"}},
                 "both": {"type": "categorical", "level": "category", "groups": {}}})
     resolve_rows(cfg, _hierarchy_events())

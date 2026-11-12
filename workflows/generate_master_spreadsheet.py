@@ -9,7 +9,7 @@ per event. Unlike mvpa-decoding's volume-level table, rows here are events: patt
 estimation (GLM or volume averaging) happens later, in estimate_patterns.py.
 
 Every column of the events.tsv is carried through: the events.hierarchy columns
-(e.g. category / subcategory / exemplar) that identify items, and any other column for queries
+(e.g. category / subcategory / item) that identify items, and any other column for queries
 (events.item_filter, template RSA event selection) and post-hoc analyses. `event_index` numbers
 the events of each run from 1.
 
@@ -33,7 +33,7 @@ from utils.rsa_common import format_pattern, load_config, parse_bids_entities
 REQUIRED_ENTITIES = ("sub", "task", "run")
 HANDLED_ENTITIES = ("sub", "ses", "task", "run")
 
-# trial_type values that are never items of interest (same blanket policy as
+# trial_type values that are never item instances of interest (same blanket policy as
 # mvpa-decoding). Rows matching these are dropped before event_index is assigned.
 EXCLUDED_TRIAL_TYPE_EXACT = ("start_block", "end_block")
 EXCLUDED_TRIAL_TYPE_SUBSTRINGS = ("fixation", "postrt")

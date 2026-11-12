@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "TRADITIONAL RDM comparison for the template RSA (config-cv-kim2020-denoised.json): same events, BOLD, VVS ROI, confounds and censoring, but no category masks and no exemplar weights. Localizer only (item_filter task == loc; WM runs have no items and are skipped). One GLM per run with each image as its own regressor (each image is shown once per run), t maps; fixation is the implicit baseline. RDM rows are the 90 images; correlation distance on run-averaged patterns; model RDMs category and subcategory. Brain mask: every aparc+aseg-labelled voxel on the 3 mm BOLD grid (examples/clearvale/scripts/make_brain_mask.py), so the GLM covers all VVS voxels the template RSA uses (the default EPI mask drops ~1/4 of them).",
+  "notes": "TRADITIONAL RDM comparison for the template RSA (config-cv-kim2020-denoised.json): same events, BOLD, VVS ROI, confounds and censoring, but no category masks and no item weights. Localizer only (item_filter task == loc; WM runs have no items and are skipped). One GLM per run with each image as its own regressor (each image is shown once per run), t maps; fixation is the implicit baseline. RDM rows are the 90 images; correlation distance on run-averaged patterns; model RDMs category and subcategory. Brain mask: every aparc+aseg-labelled voxel on the 3 mm BOLD grid (examples/clearvale/scripts/make_brain_mask.py), so the GLM covers all VVS voxels the template RSA uses (the default EPI mask drops ~1/4 of them).",
   "event_extraction": {
     "bids_root": "data/cv-bids",
     "derivatives_root": "data/cv-bids/derivatives/bids-hcp",

@@ -18,7 +18,7 @@
   },
   "pattern_estimation": {
     "method": "glm",
-    "level": "item",
+    "level": "item_instance",
     "mask_pattern": "data/haxby-bids/derivatives/preproc/sub-{subject}/masks/brain_mask.nii.gz",
     "glm": {
       "output_type": "t",

@@ -4,7 +4,7 @@ Stage 3: subject-level RSA -- data RDMs per ROI (and optionally per searchlight
 sphere) and their similarity to every model RDM.
 
 For each entry in `rois`: mask the subject's pattern images, drop non-finite /
-constant voxels, build an rsatoolbox Dataset (obs descriptors: the RDM level, e.g. exemplar, and run),
+constant voxels, build an rsatoolbox Dataset (obs descriptors: the RDM level, e.g. item, and run),
 compute the data RDM with `rdm.method` (patterns sharing a row value are averaged; crossnobis /
 poisson_cv cross-validate over `rdm.cv_descriptor`; mahalanobis / crossnobis use a
 noise precision estimated from the patterns with `rdm.noise.method`), then compare
@@ -14,10 +14,10 @@ If `searchlight.enabled`, the same is done in every sphere of `searchlight.radiu
 within `searchlight.mask_pattern` (rsatoolbox.util.searchlight), writing one
 model-similarity map per model in the subject's native space.
 
-Outputs (under <output_dir>/sub-<subject>/rsa/):
+Outputs (under <output_dir>/sub-<subject>/rdm/):
   roi-<roi>/sub-<s>_roi-<roi>_rdm.{csv,hdf5,png}
   roi-<roi>/sub-<s>_roi-<roi>_pattern-rdm.{csv,png}   (rdm.pattern_rdm.enabled: every pattern,
-                                                       row x run or item, not averaged)
+                                                       row x run or item instance, not averaged)
   sub-<s>_model-comparison.csv
   searchlight/sub-<s>_model-<model>_searchlight.nii.gz
 
@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import (
     build_dataset, build_model_rdms, clean_measurements, compute_data_rdm, compute_pattern_rdm,
     format_pattern, load_config, rdm_level, row_names, pattern_index_path, pattern_labels, pattern_rdm_method,
-    rdm_to_frame, resolve_roi_mask, sort_pattern_index, subject_dir,
+    rdm_to_frame, resolve_roi_mask, sort_pattern_index, stage_dir,
 )
 from utils.rsa_plots import plot_pattern_rdm, plot_rdm
 
@@ -151,7 +151,7 @@ def searchlight_rsa(cfg, subject, index, model_rdms, out_dir):
 def rsa_subject(cfg: dict, subject: str, output_dir: str) -> pd.DataFrame:
     index = load_pattern_index(output_dir, subject, row_names(cfg), rdm_level(cfg))
     model_rdms = build_model_rdms(cfg) if cfg["model_rdms"] else None
-    out_dir = os.path.join(subject_dir(output_dir, subject), "rsa")
+    out_dir = stage_dir(output_dir, subject, "rdm")
     os.makedirs(out_dir, exist_ok=True)
 
     rows = []

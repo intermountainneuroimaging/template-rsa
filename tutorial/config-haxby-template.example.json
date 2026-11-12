@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Smoke test of the lab's template-RSA method (docs/lab_methods.md) on Haxby 2001. Haxby has no repeated exemplars, so the 8 categories play the role of exemplars (events.hierarchy ['category'], no category_level: every exemplar is its own category, so there is no 'related' set). Templates: odd runs, 4 s lag; feature weighting: exemplar-vs-others t maps from an LSA GLM on the odd runs, within each exemplar's own category mask (p<.05, k>=10) inside VT. Targets: even-run blocks (window mean, and a 30 s timecourse from block onset).",
+  "notes": "Smoke test of the lab's template-RSA method (docs/lab_methods.md) on Haxby 2001. Haxby has no repeated items, so the 8 categories play the role of items (events.hierarchy ['category'], no category_level: every item is its own category, so there is no 'related' set). Templates: odd runs, 4 s lag; feature weighting: item-vs-others t maps from an LSA GLM on the odd runs, within each item's own category mask (p<.05, k>=10) inside VT. Targets: even-run blocks (window mean, and a 30 s timecourse from block onset).",
   "event_extraction": {
     "bids_root": "data/haxby-bids",
     "derivatives_root": "data/haxby-bids/derivatives/preproc",
@@ -59,7 +59,7 @@
     },
     "feature_weighting": {
       "levels": [
-        "exemplar",
+        "item",
         "none"
       ],
       "category_mask": {

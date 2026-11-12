@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Figure: how one localizer presentation is matched to every template (sub-090, denoised config).
-Rebuilds the category masks, exemplar weights and templates exactly as workflows/template_rsa.py does.
+Figure: how one localizer item instance is matched to every template (sub-090, denoised config).
+Rebuilds the category masks, item weights and templates exactly as workflows/template_rsa.py does.
 Run from the rsaworkflow repo root:
     python examples/clearvale/scripts/fig_template_matching.py
 -> $CV_BIDS/figures/6_template_matching_explained.png
@@ -30,20 +30,20 @@ INK, MUTED = "#222222", "#6b6b6b"
 
 cfg = load_config(CFG)
 df = read_master_spreadsheet(cfg["event_extraction"]["output_file"]); resolve_rows(cfg, df)
-tr = cfg["template_rsa"]; ex_col = T.exemplar_column(cfg); cat_col, sub_col = T.template_levels(cfg)
+tr = cfg["template_rsa"]; ex_col = T.item_column(cfg); cat_col, sub_col = T.template_levels(cfg)
 sub_df = df[df.subject == SUB].copy(); tmpl = T.select(sub_df, tr["templates"]["events"])
-items = pd.DataFrame({"exemplar": tmpl[ex_col].astype(str), "category": tmpl[cat_col].astype(str),
-                      "subcategory": tmpl[sub_col].astype(str)}).drop_duplicates("exemplar").reset_index(drop=True)
+items = pd.DataFrame({"item": tmpl[ex_col].astype(str), "category": tmpl[cat_col].astype(str),
+                      "subcategory": tmpl[sub_col].astype(str)}).drop_duplicates("item").reset_index(drop=True)
 roi = T.resolve_roi_mask(cfg["rois"]["vvs"], SUB, sorted(set(tmpl.boldfile))[0])
 masker = NiftiMasker(mask_img=roi).fit()
 runs = {b: T.load_run(cfg, r, masker) for b, r in sub_df[sub_df.boldfile.isin(set(tmpl.boldfile))].groupby("boldfile")}
 cm, ct, et, qc = T.feature_selection(cfg, sub_df, runs, masker, items)
-sets, occ = T.build_template_sets(cfg, tmpl, runs, items, cm, ct, et); ts = sets["exemplar"]
-cat = items.set_index("exemplar")["category"]; subc = items.set_index("exemplar")["subcategory"]
+sets, occ = T.build_template_sets(cfg, tmpl, runs, items, cm, ct, et); ts = sets["item"]
+cat = items.set_index("item")["category"]; subc = items.set_index("item")["subcategory"]
 
-# ---- 270 presentations x 90 templates (own template = leave-one-presentation-out)
-order = items.sort_values(["category", "subcategory", "exemplar"], key=lambda s: s.map(
-    {"face": 0, "place": 1, "item": 2}).fillna(s) if s.name == "category" else s)["exemplar"].tolist()
+# ---- 270 item instances x 90 templates (own template = leave-one-item instance-out)
+order = items.sort_values(["category", "subcategory", "item"], key=lambda s: s.map(
+    {"face": 0, "place": 1, "item": 2}).fillna(s) if s.name == "category" else s)["item"].tolist()
 rows, row_ex = [], []
 for e in order:
     for k, (_, pat) in enumerate(occ[e]):
@@ -52,8 +52,8 @@ for e in order:
         rows.append(r); row_ex.append(e)
 R = np.array(rows)
 
-# ---- example: a face presentation vs its own template, another face, a place image
-# a typical face presentation: own-template r near the median over face presentations; the related and
+# ---- example: a face item instance vs its own template, another face, a place image
+# a typical face item instance: own-template r near the median over face item instances; the related and
 # others examples are the templates whose r is nearest that row's median for the set
 jcat = np.array([cat[j] for j in order])
 face_rows = [i for i, e in enumerate(row_ex) if cat[e] == "face"]
@@ -95,10 +95,10 @@ def masked_vec(full, m):
 fig = plt.figure(figsize=(16, 14))
 gs = fig.add_gridspec(4, 6, height_ratios=[0.75, 0.8, 1.0, 1.7], width_ratios=[1, 1, 1, 0.05, 0.12, 1],
                       hspace=0.5, wspace=0.12)
-fig.suptitle(f"How one localizer presentation is matched to every template (sub-{SUB}, VVS, axial slice z={z})",
+fig.suptitle(f"How one localizer item instance is matched to every template (sub-{SUB}, VVS, axial slice z={z})",
              fontsize=13, color=INK, x=0.125, ha="left", y=0.93)
 
-# A. category masks + the presentation
+# A. category masks + the item instance
 ax = fig.add_subplot(gs[0, 0])
 lab = np.full(len(pat), np.nan)
 for i, c in enumerate(["face", "place", "item"]):
@@ -113,11 +113,11 @@ for i, c in enumerate(["face", "place", "item"]):
 ax.text(1.02, 0.85 - 3 * 0.12, f"□ ROI: {len(pat)} vox", color=MUTED, transform=ax.transAxes, fontsize=9)
 
 ax = fig.add_subplot(gs[0, 2:])
-show(ax, pat, title=f"B. One presentation y: face image '{e0}' (presentation {k0 + 1})\n(z-scored BOLD, 4.6 s after onset; all {len(pat)} ROI voxels)")
-fig.text(0.125, 0.765, "C. y is compared with each template j. For every j, BOTH vectors are cut to j's category mask and multiplied by j's exemplar t-map;\n"
+show(ax, pat, title=f"B. One item instance y: face image '{e0}' (item instance {k0 + 1})\n(z-scored BOLD, 4.6 s after onset; all {len(pat)} ROI voxels)")
+fig.text(0.125, 0.765, "C. y is compared with each template j. For every j, BOTH vectors are cut to j's category mask and multiplied by j's item t-map;\n"
          "   r is then computed over those voxels only (vector length = size of j's mask). Three of the 90 comparisons:", fontsize=10, color=INK)
 
-examples = [("target", e0, loo0, "own image (template from its other 2 presentations)"),
+examples = [("target", e0, loo0, "own image (template from its other 2 item instances)"),
             ("related", other_face, np.mean([p for _, p in occ[other_face]], axis=0), "another face image"),
             ("others", place_ex, np.mean([p for _, p in occ[place_ex]], axis=0), "a place image")]
 for col, (comp, j, raw_t, desc) in enumerate(examples):
@@ -130,7 +130,7 @@ for col, (comp, j, raw_t, desc) in enumerate(examples):
     a2.scatter(t_full, y_full, s=6, color=COL[cat[j]], alpha=0.5, linewidths=0)
     r = T.pearson(t_full, y_full)
     a2.set_title(f"template_j × w_j  vs  y × w_j\n{int(m.sum())} voxels, r = {r:.2f}", fontsize=9, loc="left", color=INK)
-    a2.set_xlabel("template j (weighted)", fontsize=8, color=MUTED); a2.set_ylabel("presentation y (weighted)", fontsize=8, color=MUTED)
+    a2.set_xlabel("template j (weighted)", fontsize=8, color=MUTED); a2.set_ylabel("item instance y (weighted)", fontsize=8, color=MUTED)
     a2.tick_params(labelsize=7, colors=MUTED); [a2.spines[s].set_visible(False) for s in ("top", "right")]
     a2.axhline(0, color="#dddddd", lw=0.8, zorder=0); a2.axvline(0, color="#dddddd", lw=0.8, zorder=0)
 a3 = fig.add_subplot(gs[1:3, 5])
@@ -154,9 +154,9 @@ for c, s in starts.items():
     ax.add_patch(Rectangle((s - 0.5, 3 * s - 0.5), n, 3 * n, fill=False, ec=COL[c], lw=1.5))
     ax.text(s + n / 2, len(R) + 4, c, color=COL[c], ha="center", va="top", fontsize=9)
 ax.set_xlabel("\ntemplate j (90 images, sorted category > subcategory)", fontsize=9, color=MUTED)
-ax.set_ylabel("presentation (270 = 90 images × 3)", fontsize=9, color=MUTED)
+ax.set_ylabel("item instance (270 = 90 images × 3)", fontsize=9, color=MUTED)
 ax.set_xticks([]); ax.set_yticks([])
-ax.set_title("D. Every presentation vs every template: 270 × 90 r values (own-image column = leave-one-presentation-out).\n"
+ax.set_title("D. Every item instance vs every template: 270 × 90 r values (own-image column = leave-one-item instance-out).\n"
              "   Colored boxes = same category. Each row is summarized as target (own image), related (rest of its box), others (outside).",
              fontsize=9, loc="left", color=INK, pad=8)
 cb = fig.colorbar(im, cax=fig.add_subplot(gs[3, 3])); cb.ax.yaxis.set_ticks_position("left"); cb.ax.yaxis.set_label_position("left"); cb.set_label("Pearson r", fontsize=8, color=MUTED); cb.ax.tick_params(labelsize=7)

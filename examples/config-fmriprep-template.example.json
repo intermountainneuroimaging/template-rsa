@@ -30,7 +30,7 @@
   },
   "pattern_estimation": {
     "method": "glm",
-    "level": "item",
+    "level": "item_instance",
     "mask_pattern": "/path/to/bids/derivatives/fmriprep/sub-{subject}/func/sub-{subject}_task-*_space-T1w_desc-brain_mask.nii.gz",
     "model_unlabeled_events": true,
     "confounds": {

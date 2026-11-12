@@ -51,7 +51,7 @@ def test_kim_notebook(core_run, tmp_path, monkeypatch):
     assert (tmp_path / "stats_and_figures.pdf").exists() and (tmp_path / "run_settings.json").exists()
     removal = pd.read_csv(tmp_path / "removal_vs_maintain_by_bin.csv")
     assert set(removal["operation"]) == {"replace_category", "suppress"}
-    # synthetic suppress drops the exemplar after the stimulus: late bins below maintain
+    # synthetic suppress drops the item after the stimulus: late bins below maintain
     late = removal[(removal["operation"] == "suppress") & (removal["bin_start"] >= 6)]
     assert (late["mean"] < 0).all()
     repl = pd.read_csv(tmp_path / "replacement_minus_target.csv")
@@ -69,7 +69,7 @@ def test_bretton_notebook(core_run, tmp_path, monkeypatch):
     check = pd.read_csv(tmp_path / "template_check_manipulation.csv")
     assert (check["mean_diff"] > 0).all()
     memory = pd.read_csv(tmp_path / "fidelity_remembered_vs_forgotten.csv")
-    exemplar = memory[memory["level"] == "exemplar"]
-    assert len(exemplar) and (exemplar["mean_diff"] > 0).mean() >= 2 / 3  # remembered exemplars came back stronger
+    item = memory[memory["level"] == "item"]
+    assert len(item) and (item["mean_diff"] > 0).mean() >= 2 / 3  # remembered items came back stronger
     mixed = pd.read_csv(tmp_path / "fidelity_mixed_models.csv")
     assert len(mixed)

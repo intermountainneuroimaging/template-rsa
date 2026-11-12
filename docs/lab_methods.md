@@ -13,14 +13,14 @@ Code is split in two:
 
 - **Core pipeline (design-agnostic), two analysis stages:**
   - *template* — [workflows/template_rsa.py](../workflows/template_rsa.py) (subject: category masks, weights, templates saved to disk, template validation) and [workflows/group_template_rsa.py](../workflows/group_template_rsa.py) (validation across subjects)
-  - *fidelity* — [workflows/template_fidelity.py](../workflows/template_fidelity.py) (subject: each target event scored against its own exemplar's saved template; related / others / extra sets opt-in) and [workflows/group_fidelity.py](../workflows/group_fidelity.py) (group raw table, descriptive summaries)
+  - *fidelity* — [workflows/template_fidelity.py](../workflows/template_fidelity.py) (subject: each target event scored against its own item's saved template; related / others / extra sets opt-in) and [workflows/group_fidelity.py](../workflows/group_fidelity.py) (group raw table, descriptive summaries)
 - **Study-specific post-hoc analyses:** [_interactive_notebooks/kim2020_removal_operations.ipynb](../_interactive_notebooks/kim2020_removal_operations.ipynb) and [_interactive_notebooks/bretton2024_ltm_fidelity.ipynb](../_interactive_notebooks/bretton2024_ltm_fidelity.ipynb), on helpers in [rsa_posthoc_common.py](../_interactive_notebooks/rsa_posthoc_common.py).
 
 ---
 
 ## 0. What kind of RSA this is, and what changed in the workflow
 
-> **Vocabulary.** This document follows the papers: an *item* is one specific picture (a face, a scene). The pipeline calls that an **exemplar**, the finest level of `events.hierarchy` (here `category > subcategory > stimulus`), and keeps *item* for a single event of interest. So the papers' "item-level templates / weights" are `feature_weighting.levels: ["exemplar"]` and `exemplar_contrast` in the config, and the task operation is in an `operation` column (not "condition", which the pipeline uses for a coarser hierarchy level).
+> **Vocabulary.** This document follows the papers: an *item* is one specific picture (a face, a scene). The pipeline calls that an **item**, the finest level of `events.hierarchy` (here `category > subcategory > stimulus`), and keeps *item* for a single event of interest. So the papers' "item-level templates / weights" are `feature_weighting.levels: ["item"]` and `item_contrast` in the config, and the task operation is in an `operation` column (not "condition", which the pipeline uses for a coarser hierarchy level).
 
 The lab's "RSA" is **feature-weighted template matching**: item-level pattern similarity between a template phase and a target phase. It is not the classic Kriegeskorte-style comparison of a data RDM with model RDMs.
 
@@ -32,13 +32,13 @@ The RDM config (`events.hierarchy` → RDM → `model_rdms`) has no slot for tem
 
 | Change | Where |
 |---|---|
-| New analysis families, selected with `pipeline.analyses: ["template", "fidelity"]` (alongside or instead of `"rdm"`): *template* builds and validates the templates, *fidelity* scores each target event against its own exemplar's template (named after the papers' "encoding fidelity" / "representational fidelity"; not a classifier, so not "decoding") | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
+| New analysis families, selected with `pipeline.analyses: ["template", "fidelity"]` (alongside or instead of `"rdm"`): *template* builds and validates the templates, *fidelity* scores each target event against its own item's template (named after the papers' "encoding fidelity" / "representational fidelity"; not a classifier, so not "decoding") | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
 | New `template_rsa` config section: `templates`, `feature_weighting`, named `targets`, per-target `group` | same; validated by `utils/validate_rsa_config.py::validate_template` |
 | Time windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}` | `rsa_common.py::validate_window`, `window_volumes` |
 | Atlas-label ROIs: `{"atlas_pattern", "labels"}` (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid | `rsa_common.py::resolve_roi_mask` (used by both analysis families) |
-| Subject and group stages for each, and common report pages (workflow diagram, template validation with every presentation shown separately, descriptive fidelity) | `template_rsa.py`, `template_fidelity.py`, `group_template_rsa.py`, `group_fidelity.py`, `generate_report.py::template_section`, `fidelity_section` |
+| Subject and group stages for each, and common report pages (workflow diagram, template validation with every item instance shown separately, descriptive fidelity) | `template_rsa.py`, `template_fidelity.py`, `group_template_rsa.py`, `group_fidelity.py`, `generate_report.py::template_section`, `fidelity_section` |
 | **Core / post-hoc split.** The core stops at a group raw table (`group/fidelity/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
-| `extra_sets`: score a trial against the templates named in any events column, at exemplar, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
+| `extra_sets`: score a trial against the templates named in any events column, at item, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
 
 The config layout deliberately mirrors mvpa-decoding: `templates` ≈ `training`, `targets` ≈ `testing` / `timecourse_decoding`, and `window` uses the same syntax. A lab config can therefore hold both the decoding and the RSA settings for one study.
 
@@ -96,16 +96,16 @@ For [B]'s **category-level templates**, $w_i(v) = t_{c(i)}(v)$, the category con
 
 **Workflow:**
 
-- `feature_weighting.exemplar_contrast` takes `all_others`, `within_category` or `within_subcategory`.
-- `feature_weighting.levels` takes `exemplar` (the papers' item level), `category` and/or `none`, and every level listed is computed side by side.
+- `feature_weighting.item_contrast` takes `all_others`, `within_category` or `within_subcategory`.
+- `feature_weighting.levels` takes `item` (the papers' item level), `category` and/or `none`, and every level listed is computed side by side.
 - Both GLMs are fit as **one concatenated model** across runs. Item and category regressors are shared; drift, intercept, nuisance events and confounds are run-specific. This is how SPM does it, and it handles items seen in only one run [B]. Code: `template_rsa.py::concat_glm`.
 
 ### 1.5 Templates
 
 For item $i$ with template events $E_i$ and template window $W_\text{tmpl}$:
 
-- [K]: the 1.38 s image presentation, shifted 4.6 s = 10 TRs.
-- [B]: the 2 s presentation, shifted 5 s.
+- [K]: the 1.38 s image item instance, shifted 4.6 s = 10 TRs.
+- [B]: the 2 s item instance, shifted 5 s.
 
 $$T_i = \frac{1}{|E_i|}\sum_{e\in E_i} p_{W_\text{tmpl}}(e),\qquad \tilde T_i = (T_i \odot w_i)\big|_{M_{c(i)}}$$
 
@@ -115,7 +115,7 @@ $\odot$ is the element-wise product. In [B], $|E_i| = 1$: the template is the it
 
 ### 1.5b Template validation
 
-Let $u$ index presentation units: one per item per template run, $p_u$ = the mean window pattern of that item's presentations in that run (in [K] each item is shown once per run, so a unit is one presentation).
+Let $u$ index item instance units: one per item per template run, $p_u$ = the mean window pattern of that item's item instances in that run (in [K] each item is shown once per run, so a unit is one item instance).
 
 **`kim2020` (published; [K] code, `rsa_decode_02_item.m`, "targ vs. non-targ").** For every ordered pair of units $u \neq v$ with items $i_u, i_v$:
 
@@ -123,7 +123,7 @@ $$z_{uv} = \operatorname{artanh}\operatorname{corr}\!\big((p_u\odot w_{i_u})|_{M
 
 Each pattern is weighted by **its own** item's weights, and both are cut to the **row** item's category mask. Masks and weights come from all template runs. A unit's target score is the mean $z_{uv}$ over the other units of the same item; related, over units of other items in the same category; others, over units of other categories.
 
-**`cv` (not in the papers; from mvpa-decoding's `kfold_cv`).** Folds over the template runs (`per_run`, `group_kfold`, `explicit_groups`). In fold $k$, the category masks, weights and templates $\tilde T^{(k)}_j$ are refit on the training runs only. Each presentation $e$ in the held-out run is scored against every fold template exactly as a target (§1.6): $r_j = \operatorname{corr}(\tilde T^{(k)}_j, (p(e)\odot w^{(k)}_j)|_{M^{(k)}_{c(j)}})$, then mean r over the set and Fisher z.
+**`cv` (not in the papers; from mvpa-decoding's `kfold_cv`).** Folds over the template runs (`per_run`, `group_kfold`, `explicit_groups`). In fold $k$, the category masks, weights and templates $\tilde T^{(k)}_j$ are refit on the training runs only. Each item instance $e$ in the held-out run is scored against every fold template exactly as a target (§1.6): $r_j = \operatorname{corr}(\tilde T^{(k)}_j, (p(e)\odot w^{(k)}_j)|_{M^{(k)}_{c(j)}})$, then mean r over the set and Fisher z.
 
 **Workflow:** `validation.methods`, `validation.cross_validation` → `template_rsa.py::validate_kim2020`, `validate_cv`, `resolve_folds`.
 
@@ -139,12 +139,12 @@ $$S_A(y) = \operatorname{artanh}\!\Big(\tfrac{1}{|A|}\textstyle\sum_{i\in A} r_i
 
 The sets, for a trial whose item is $i^\*$. Only **target** is scored by default; the others are opt-in (`targets.<set>.comparison_sets`, `extra_sets`):
 
-- **target** $= \{i^\*\}$ — the trial's own exemplar: its *template fidelity*
+- **target** $= \{i^\*\}$ — the trial's own item: its *template fidelity*
 - **related** (opt-in control) $= \{j\neq i^\*: c(j)=c(i^\*)\}$, other items of the same category
 - **others** (opt-in) $= \{j: c(j)\neq c(i^\*)\}$, items of other categories
 
-Target alone mixes exemplar-specific and category-level information; target − related isolates the exemplar-specific part, which is why [K]'s encoding-fidelity check (Fig. 5a) uses all three.
-- Optional named sets from other event columns (`extra_sets`): $\{j: \ell(j) = e[\text{column}]\}$ for a level $\ell \in$ {exemplar, category, subcategory}. For example, on [K]'s replace trials, every template of the category switched to (`replacement`). The paper tracked the replacement with the category classifier; this is its item-RSA counterpart.
+Target alone mixes item-specific and category-level information; target − related isolates the item-specific part, which is why [K]'s encoding-fidelity check (Fig. 5a) uses all three.
+- Optional named sets from other event columns (`extra_sets`): $\{j: \ell(j) = e[\text{column}]\}$ for a level $\ell \in$ {item, category, subcategory}. For example, on [K]'s replace trials, every template of the category switched to (`replacement`). The paper tracked the replacement with the category classifier; this is its item-RSA counterpart.
 
 Report lines (descriptive only): `targets.<set>.group.overlay` names the conditions to draw, in mvpa-decoding's overlay syntax (an events query per condition plus `color`, `line_type`, `group` for panels); each line averages every trial its query matches, e.g. one line per operation averaged over subcategory. Without it, `group.group_by` crosses the listed columns. Timecourse plots also mark the trial structure from the events table (`targets.<set>.annotation`, mvpa-decoding's `trial_start_event` / `annotation_labels`): each event position most trials share (e.g. image onset, operation cue, the next trial) at its mean start, optionally repeated at `lag_seconds` (e.g. 4.6 s, the template lag) to show where its BOLD response peaks.
 
@@ -169,7 +169,7 @@ Replacement tracking is analysed the same way: on replace trials, the `replaceme
 
 **Workflow:** core target set `study_timecourse` (30 TRs from onset, `extra_sets.replacement`). Analysis in the Kim notebook, sections 2–3: `BASELINE_SECONDS = (0, 2.76)`, `REFERENCE = "maintain"`, `STAT_WINDOW_SECONDS = (2.76, 9.66)`, `BIN_SECONDS = 1.38`. All timing is in seconds, converted with the data's TR. Helpers: `baseline_correct`, `subtract_reference`, `bin_means`, `one_sample_by_bin`, `first_significant_bin`, `compare_groups_by_bin`.
 
-**Encoding fidelity [K, Fig. 5].** Encoding fidelity $\mathrm{EF}_n = S_{\{i_n\}}(p_W(n))$, with $W$ = the 2.76 s image presentation shifted 4.6 s. Two analyses use it:
+**Encoding fidelity [K, Fig. 5].** Encoding fidelity $\mathrm{EF}_n = S_{\{i_n\}}(p_W(n))$, with $W$ = the 2.76 s image item instance shifted 4.6 s. Two analyses use it:
 
 - *Sensitivity check:* target > related > others.
 - *Proactive interference:* for each operation on trial $N$, compare $\mathrm{EF}_{N+1}$ when item $N+1$ is from the same category as item $N$ vs. a different one, giving a same − different score per operation.
@@ -198,7 +198,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 **Workflow:** the core target sets `manipulation` and `post_test` (window means, + 5 s), in all four `template_rsa.rois`. The rest is in the Bretton notebook:
 
 - **Memory flag:** derived from the raw post-test `response` / `confidence` columns (`memory_flag`).
-- **Operation:** joined from the study phase by item (`join_exemplar_columns`).
+- **Operation:** joined from the study phase by item (`join_item_columns`).
 - **Template check:** `paired_contrast` of target vs. related.
 - **Remembered vs. forgotten:** `paired_contrast` with a subject-bootstrap CI over 10,000 resamples.
 - **Mixed models:** `mixed_model`, `z ~ C(memory, Treatment('remembered'))` with `re_formula` `~C(memory, Treatment('remembered'))`.
@@ -217,9 +217,9 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 | Run-wise z-scoring | Princeton MVPA toolbox | `timeseries.standardize: zscore_sample` | ✅ |
 | VVS ROI | Harvard-Oxford regions at 20%, in native space | `rois.vvs.mask_pattern` (build it from the HO atlas), or `atlas_pattern` + labels | ≈ ROI file is user-provided |
 | Category masks | SPM GLM on localizer, mini-block boxcars + motion, cat > others, p < .05, k = 10 | `category_mask` with `block_merge_gap_seconds: 5`, `hrf_model: spm`, `drift_model: cosine`, AR(1) | ≈ nilearn instead of SPM; FD-censored volumes are also left out of the GLM |
-| Item weights | SPM LSA, item vs. 53 others, t-values | `exemplar_contrast: all_others`, `levels: [exemplar]` | ✅ |
-| Templates | z-scored, 3 presentation TRs + 10-TR shift, averaged over 5 runs, × weights | `templates.window` onset + 4.6 → offset + 4.6 | ✅ |
-| Localizer validation (Fig. 3b) | Every presentation × every other; each pattern × its own item's t-map, inside the first item's category mask; z per pair; same > related > others | `validation.methods: ["kim2020"]` → `validate_kim2020` (§1.5b) | ✅ (an earlier leave-one-presentation-out version of this workflow was not the published method and has been removed) |
+| Item weights | SPM LSA, item vs. 53 others, t-values | `item_contrast: all_others`, `levels: [item]` | ✅ |
+| Templates | z-scored, 3 item instance TRs + 10-TR shift, averaged over 5 runs, × weights | `templates.window` onset + 4.6 → offset + 4.6 | ✅ |
+| Localizer validation (Fig. 3b) | Every item instance × every other; each pattern × its own item's t-map, inside the first item's category mask; z per pair; same > related > others | `validation.methods: ["kim2020"]` → `validate_kim2020` (§1.5b) | ✅ (an earlier leave-one-item instance-out version of this workflow was not the published method and has been removed) |
 | Cross-validated localizer validation | — | `validation.methods: ["cv"]`: masks, weights and templates refit per fold | not in the paper (sensitivity check) |
 | Target weighting; mean r → z | `ytarg .* xbeta`; mean r over set, then Fisher z | `weight_target_patterns: true`; `S_A` | ✅ |
 | Item-level timecourse (Fig. 4b) | 30 unshifted TRs, baseline first 6 TRs, minus maintain, 5 × 3-TR blocks, one-sample t, rm-ANOVA, pairwise FDR | core `study_timecourse` → notebook §2 | ✅ |
@@ -239,8 +239,8 @@ The released MATLAB code was read line by line: `rsa_decode_01.m` (GLMs) and `rs
 | Step | [K] code | This workflow | |
 |---|---|---|---|
 | Category masks | One SPM model; all localizer runs concatenated into one session; category > others, p < .05, k = 10 | Concatenated GLM over all template runs, same contrast and threshold | ≈ nilearn instead of SPM |
-| Item weights | spmT of item vs. all others, same model | LSA exemplar-vs-all-others t-map, all runs | ✅ |
-| Per-presentation pattern | Mean of z-scored, lag-shifted volumes; spike volumes excluded | `event_pattern`: mean of the window; censored volumes excluded | ✅ |
+| Item weights | spmT of item vs. all others, same model | LSA item-vs-all-others t-map, all runs | ✅ |
+| Per-item instance pattern | Mean of z-scored, lag-shifted volumes; spike volumes excluded | `event_pattern`: mean of the window; censored volumes excluded | ✅ |
 | Template | Mean over runs of (pattern × own item t), inside own category mask | Mean pattern × item t inside own category mask (the same, since the weighting is linear) | ✅ |
 
 **Fidelity scoring (study-phase timecourse): match.**
@@ -253,15 +253,15 @@ The released MATLAB code was read line by line: `rsa_decode_01.m` (GLMs) and `rs
 
 The study runs are separate from the localizer runs, so this is already a held-out test.
 
-**Localizer validation.** The earlier version of this workflow scored a presentation against its own template rebuilt without it, with both vectors weighted by template j's map. That was not the published method. It is replaced by `kim2020` (§1.5b). On one Clearvale subject (sub-090, VVS, mean Fisher z, target / related / others):
+**Localizer validation.** The earlier version of this workflow scored an item instance against its own template rebuilt without it, with both vectors weighted by template j's map. That was not the published method. It is replaced by `kim2020` (§1.5b). On one Clearvale subject (sub-090, VVS, mean Fisher z, target / related / others):
 
 | Validation | target | related | others |
 |---|---|---|---|
 | `kim2020` (published) | 0.210 | 0.026 | 0.005 |
-| Earlier leave-one-presentation-out (removed) | 0.258 | 0.114 | 0.027 |
+| Earlier leave-one-item instance-out (removed) | 0.258 | 0.114 | 0.027 |
 | `cv` (feature selection refit per fold) | 0.162 | 0.114 | 0.032 |
 
-In the published method, feature selection sees every presentation, including the one being validated. The `cv` method shows how much that matters: target drops by about 0.1 when the masks and weights are refit without the held-out run. Fidelity of separate runs is unaffected.
+In the published method, feature selection sees every item instance, including the one being validated. The `cv` method shows how much that matters: target drops by about 0.1 when the masks and weights are refit without the held-out run. Fidelity of separate runs is unaffected.
 
 ### Bretton et al. (2024)
 
@@ -270,11 +270,11 @@ In the published method, feature selection sees every presentation, including th
 | Preprocessing | fMRIPrep 21.0.1, MNI152NLin2009cAsym, TR 1 s; fMRIPrep confounds "used to clean the data" (exact set not stated) | `bold_glob` in MNI; `confounds` motion (24) + WM/CSF + cosines; `timeseries.regress_confounds: true` | ≈ confound set assumed |
 | ROIs | VVS, PFC, parietal, hippocampus from each participant's parcellation (Desikan-Killiany) in MNI, summed and binarized | `rois.*` = `atlas_pattern` (aparcaseg) + `labels` | ≈ VVS label list needs lab confirmation |
 | Category mask + category weights | GLM on pre-test, scene vs. face t, p < .05, k = 10 | `category_mask.events` = all pre-test trials; `levels` includes `category` | ✅ |
-| Item weights | LSA, each of 90 items vs. the 89 others | `exemplar_contrast: all_others`, concatenated GLM (items in one run each) | ✅ |
+| Item weights | LSA, each of 90 items vs. the 89 others | `item_contrast: all_others`, concatenated GLM (items in one run each) | ✅ |
 | Templates | pre-test pattern, single exposure, the 90 manipulated scenes | `templates.events` = pre-test scenes whose `trial_type` matches `new_.*` (the item's status is in the event name), `window` + 5 s; old scenes and faces are nuisance regressors in the item GLM | ✅ (validation skipped: single exposures) |
 | Template check on manipulation phase | target > all other items | core `manipulation` → notebook §1 (target vs. related, i.e. other scenes) | ✅ |
 | Memory flag | remembered = "sure old" hit on the post-test; forgotten otherwise | notebook `memory_flag` from `response` / `confidence` | ✅ |
-| Operation per post-test item | from the manipulation phase | notebook `join_exemplar_columns` | ✅ |
+| Operation per post-test item | from the manipulation phase | notebook `join_item_columns` | ✅ |
 | Fidelity, remembered vs. forgotten | per operation, paired t on subject means (n = 18 with both outcomes) | notebook §2 `paired_contrast` (subjects with both) | ✅ |
 | Mixed model | (1 + memory \| participant), per operation | notebook §3 `mixed_model` (statsmodels) | ✅ |
 | Bootstrap CIs | 10,000 bootstrap resamples of participants | notebook `paired_contrast` (`N_BOOTSTRAP = 10000`) | ≈ CI of paired difference, not of a pooled trial-level regression |
@@ -348,8 +348,8 @@ python workflows/generate_report.py --config CONFIG
 
 Outputs:
 
-- `<output_dir>/sub-<s>/template_rsa/`: saved templates, category masks, feature-selection QC, template validation (summary and every presentation pair), cv folds
+- `<output_dir>/sub-<s>/templates/`: saved templates, category masks and their category-vs-others t maps (`_stat-t`), feature-selection QC, template validation (summary and every item instance pair), cv folds
 - `<output_dir>/sub-<s>/fidelity/`: trial-level scores per target set
-- `<output_dir>/group/template_rsa/`: validation per subject and the presentation-level matrices averaged over subjects
+- `<output_dir>/group/templates/`: validation per subject and the item-instance-level matrices averaged over subjects
 - `<output_dir>/group/fidelity/`: `raw/` (the notebooks' input), subject means, summaries, comparison-set tests, figures
 - `<output_dir>/posthoc/<study>/`: the notebook's `stats_and_figures.pdf`, one CSV per table, `run_settings.json`

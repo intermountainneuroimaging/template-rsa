@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 Stage 3 (fidelity): template fidelity of target events for one subject -- how similar each event's
-pattern is to the template of its own exemplar (Bretton et al. 2024's "representational fidelity";
+pattern is to the template of its own item (Bretton et al. 2024's "representational fidelity";
 Kim et al. 2020's "encoding fidelity" and item-level timecourse). Templates come from stage 2
 (template_rsa.py). The maths is the lab method's (Kim et al. 2020 code: `ytarg .* xbeta`, corr2,
 mean r over a set, Fisher z); see docs/lab_methods.md.
 
 For each ROI and named target set (template_rsa.targets), each target event -- or each volume of
-its window, mode "timecourse" -- is correlated with the template of the event's own exemplar (the
+its window, mode "timecourse" -- is correlated with the template of the event's own item (the
 finest events.hierarchy level): the target pattern is cut to that template's category mask and
 weighted by its weights (feature_weighting.weight_target_patterns), then Pearson r. Only the
 templates a set needs are scored. Opt-in sets (targets.<set>.comparison_sets, extra_sets):
-  target   the event's own exemplar (the default, and usually the only set)
-  related  the other exemplars of its category (or subcategory: related_level) -- a control:
-           target - related is the exemplar-specific part of the score
-  others   the exemplars of the other categories
-  <name>   extra_sets: the templates whose exemplar / category / subcategory is named in another
+  target   the event's own item (the default, and usually the only set)
+  related  the other items of its category (or subcategory: related_level) -- a control:
+           target - related is the item-specific part of the score
+  others   the items of the other categories
+  <name>   extra_sets: the templates whose item / category / subcategory is named in another
            events column (e.g. every template of the replacement category on replace trials)
 mode "timecourse": one score per volume from the window start (unshifted), e.g. 30 TRs from trial
 onset; mode "window_mean": the window's volumes are averaged first, one score per event.
@@ -43,9 +43,9 @@ import pandas as pd
 from nilearn.maskers import NiftiMasker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import load_config, read_master_spreadsheet, subject_dir, window_volumes
+from utils.rsa_common import load_config, read_master_spreadsheet, stage_dir, window_volumes
 from workflows.template_rsa import (
-    TemplateSet, comparison_sets, event_pattern, exemplar_column, fisher_z, load_run, load_template_set,
+    TemplateSet, comparison_sets, event_pattern, item_column, fisher_z, load_run, load_template_set,
     roi_mask_path, score_matrix, select, target_specs, templates_path,
 )
 
@@ -53,7 +53,7 @@ EVENT_META_COLUMNS = ("boldfile", "eventfile", "n_frames")
 
 
 def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
-    """extra_sets {name: {"column", "level"}}: the templates whose exemplar / category / subcategory equals
+    """extra_sets {name: {"column", "level"}}: the templates whose item / category / subcategory equals
     this event's value in `column` -- e.g. on replace trials, every template of the replacement
     category ({"column": "replace_category", "level": "category"}). Events with no value (or no
     matching template) get no score for that set."""
@@ -63,7 +63,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
         if value is None or pd.isna(value):
             continue
         level = xs["level"]
-        members = ts.items[ts.items[level].astype(str) == str(value)]["exemplar"].tolist()
+        members = ts.items[ts.items[level].astype(str) == str(value)]["item"].tolist()
         if members:
             sets[name] = members
     return sets
@@ -71,7 +71,7 @@ def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
 
 def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
     tr_cfg = cfg["template_rsa"]
-    ex_col = exemplar_column(cfg)
+    ex_col = item_column(cfg)
     events = select(sub_df, spec["events"]).copy()
     events[ex_col] = events[ex_col].astype(str)
     meta_cols = [c for c in events.columns if c not in EVENT_META_COLUMNS]
@@ -93,7 +93,7 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
                 todo.append((ev, sets))
             needed = list(dict.fromkeys(m for _, sets in todo for members in sets.values() for m in members))
             col_of = {it: j for j, it in enumerate(needed)}
-            # only the templates some event needs (the trial's own exemplar, unless more sets are opted in)
+            # only the templates some event needs (the trial's own item, unless more sets are opted in)
             S = score_matrix(ts, rd.clean, needed) if spec["mode"] == "timecourse" and needed else None
             for ev, sets in todo:
                 meta = {c: ev[c] for c in meta_cols}
@@ -105,7 +105,7 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
                             r = np.nanmean(S[vol, [col_of[m] for m in members]]) if members else np.nan
                             rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
                                          "tr_offset": k, "time_s": k * rd.tr, "volume": int(vol),
-                                         "n_exemplars": len(members), "r": r, "z": fisher_z(r)})
+                                         "n_items": len(members), "r": r, "z": fisher_z(r)})
                 else:
                     y = event_pattern(rd, spec["window"], ev)
                     if y is None:
@@ -113,9 +113,9 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
                     for comp, members in sets.items():
                         r = np.nanmean([ts.score(y, m) for m in members]) if members else np.nan
                         rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
-                                     "n_exemplars": len(members), "r": r, "z": fisher_z(r)})
+                                     "n_items": len(members), "r": r, "z": fisher_z(r)})
     if skipped:
-        print(f"    (!) {name}: {skipped} event-level(s) whose exemplar has no template were skipped")
+        print(f"    (!) {name}: {skipped} event-level(s) whose item has no template were skipped")
     return pd.DataFrame(rows)
 
 
@@ -135,8 +135,8 @@ def fidelity_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str)
     tr_cfg = cfg["template_rsa"]
     sub_df = df[df["subject"] == subject].copy()
     specs = target_specs(cfg)
-    template_dir = os.path.join(subject_dir(output_dir, subject), "template_rsa")
-    out_dir = os.path.join(subject_dir(output_dir, subject), "fidelity")
+    template_dir = stage_dir(output_dir, subject, "template")
+    out_dir = stage_dir(output_dir, subject, "fidelity")
     os.makedirs(out_dir, exist_ok=True)
     needed = set()
     for spec in specs.values():

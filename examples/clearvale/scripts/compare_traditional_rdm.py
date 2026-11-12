@@ -5,8 +5,8 @@ same subject? sub-090, localizer only, VVS ROI.
 
 Three 90 x 90 image-by-image similarity matrices, all leave-one-out on the diagonal so an image is never
 compared with the same data:
-  template     -- the report's figure 5c: template a (masked to a's category mask, weighted by a's exemplar
-                  t map) vs. each single presentation of image b, averaged over b's presentations.
+  template     -- the report's figure 5c: template a (masked to a's category mask, weighted by a's item
+                  t map) vs. each single item instance of image b, averaged over b's item instances.
   bold_plain   -- the same windowed BOLD patterns, whole VVS ROI, no masks, no weights.
   traditional  -- GLM t maps (one per image per run; config-cv-traditional-rdm.json), whole VVS ROI,
                   cross-run correlation: image a in run r vs. image b in run s != r, averaged.
@@ -42,20 +42,20 @@ INK, MUTED = "#222222", "#6b6b6b"
 # ---------------- template side (as in fig_template_matching.py / report figure 5c)
 cfg = load_config(TCFG)
 df = read_master_spreadsheet(cfg["event_extraction"]["output_file"]); resolve_rows(cfg, df)
-tr = cfg["template_rsa"]; ex_col = T.exemplar_column(cfg); cat_col, sub_col = T.template_levels(cfg)
+tr = cfg["template_rsa"]; ex_col = T.item_column(cfg); cat_col, sub_col = T.template_levels(cfg)
 sub_df = df[df.subject == SUB].copy(); tmpl = T.select(sub_df, tr["templates"]["events"])
-items = pd.DataFrame({"exemplar": tmpl[ex_col].astype(str), "category": tmpl[cat_col].astype(str),
-                      "subcategory": tmpl[sub_col].astype(str)}).drop_duplicates("exemplar").reset_index(drop=True)
+items = pd.DataFrame({"item": tmpl[ex_col].astype(str), "category": tmpl[cat_col].astype(str),
+                      "subcategory": tmpl[sub_col].astype(str)}).drop_duplicates("item").reset_index(drop=True)
 roi = T.resolve_roi_mask(cfg["rois"]["vvs"], SUB, sorted(set(tmpl.boldfile))[0])
 masker = NiftiMasker(mask_img=roi).fit()
 runs = {b: T.load_run(cfg, r, masker) for b, r in sub_df[sub_df.boldfile.isin(set(tmpl.boldfile))].groupby("boldfile")}
 cm, ct, et, qc = T.feature_selection(cfg, sub_df, runs, masker, items)
-sets, occ = T.build_template_sets(cfg, tmpl, runs, items, cm, ct, et); ts = sets["exemplar"]
+sets, occ = T.build_template_sets(cfg, tmpl, runs, items, cm, ct, et); ts = sets["item"]
 
 CORDER = {"face": 0, "place": 1, "item": 2}
 items["c"] = items["category"].map(CORDER)
-order = items.sort_values(["c", "subcategory", "exemplar"])["exemplar"].tolist()
-info = items.set_index("exemplar").loc[order]
+order = items.sort_values(["c", "subcategory", "item"])["item"].tolist()
+info = items.set_index("item").loc[order]
 cat, subc = info["category"].to_numpy(dtype=str), info["subcategory"].to_numpy(dtype=str)
 n = len(order)
 
@@ -66,7 +66,7 @@ def pearson(a, b):
 
 
 def template_cell(a, b, weighted=True):
-    """Mean r of image b's single presentations with template a; diagonal leave-one-presentation-out."""
+    """Mean r of image b's single item instances with template a; diagonal leave-one-item instance-out."""
     rs = []
     for k, (_, pat) in enumerate(occ[b]):
         others = [p for j, (_, p) in enumerate(occ[a]) if not (a == b and j == k)]
@@ -110,7 +110,7 @@ def cross_run(a, b):
 M_trad = np.array([[cross_run(a, b) for b in order] for a in order])
 
 # the pipeline's classic RDM (correlation distance on run-averaged t maps), reordered
-rdm = pd.read_csv(f"{odir}/sub-{SUB}/rsa/roi-vvs/sub-{SUB}_roi-vvs_rdm.csv", index_col=0)
+rdm = pd.read_csv(f"{odir}/sub-{SUB}/rdm/roi-vvs/sub-{SUB}_roi-vvs_rdm.csv", index_col=0)
 rdm.index, rdm.columns = rdm.index.astype(str), rdm.columns.astype(str)
 M_classic = 1 - rdm.loc[order, order].values                                        # back to similarity
 
@@ -173,7 +173,7 @@ fits["subcategory_within_category"] = [
     for M in mats.values()]
 
 # does an image that is distinct in one method stand out in the other? per-image same-image advantage
-adv = pd.DataFrame({"exemplar": order, "category": cat,
+adv = pd.DataFrame({"item": order, "category": cat,
                     **{k: [M[b, b] - np.nanmean(M[same_cat[:, b], b]) for b in range(n)]
                        for k, M in zip(keys[:3], list(mats.values())[:3])}})
 

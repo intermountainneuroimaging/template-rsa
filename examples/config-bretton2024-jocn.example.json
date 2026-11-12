@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "Bretton, Kim, Banich & Lewis-Peacock (2024) J Cogn Neurosci 36:2117 -- CORE settings of the feature-weighted exemplar- and category-level fidelity (the paper's item- and category-level); the study-specific statistics (memory flag from the post-test responses, operation joined from the WM phase, remembered vs forgotten per operation, mixed models, bootstrap CIs, ROI specificity) are in _interactive_notebooks/bretton2024_ltm_fidelity.ipynb. Method: docs/lab_methods.md (section B). ASSUMED events.tsv schema (rename to match yours): every row has stimulus (exemplar id) and category (scene/face) -- events.hierarchy category > stimulus; task-prememory trial_type names each exemplar's status, 'old_<exemplar>' (seen in the initial exposure) or 'new_<exemplar>'; the template exemplars are the new scenes (category 'scene' and trial_type matching 'new_.*'), i.e. the 90 scenes that will be manipulated -- the old scenes and all faces are modeled, but get no template; task-study / task-postmemory rows trial_type='stimulus'; task-study rows also carry operation (maintain/replace/suppress); task-postmemory rows carry the raw response (old/new) and confidence (sure/unsure). TR = 1 s, fMRIPrep MNI152NLin2009cAsym, 5 s hemodynamic lag. ROIs from fMRIPrep aparcaseg (Desikan-Killiany; confirm the VVS label set with the lab).",
+  "notes": "Bretton, Kim, Banich & Lewis-Peacock (2024) J Cogn Neurosci 36:2117 -- CORE settings of the feature-weighted item- and category-level fidelity (the paper's item- and category-level); the study-specific statistics (memory flag from the post-test responses, operation joined from the WM phase, remembered vs forgotten per operation, mixed models, bootstrap CIs, ROI specificity) are in _interactive_notebooks/bretton2024_ltm_fidelity.ipynb. Method: docs/lab_methods.md (section B). ASSUMED events.tsv schema (rename to match yours): every row has stimulus (item id) and category (scene/face) -- events.hierarchy category > stimulus; task-prememory trial_type names each item's status, 'old_<item>' (seen in the initial exposure) or 'new_<item>'; the template items are the new scenes (category 'scene' and trial_type matching 'new_.*'), i.e. the 90 scenes that will be manipulated -- the old scenes and all faces are modeled, but get no template; task-study / task-postmemory rows trial_type='stimulus'; task-study rows also carry operation (maintain/replace/suppress); task-postmemory rows carry the raw response (old/new) and confidence (sure/unsure). TR = 1 s, fMRIPrep MNI152NLin2009cAsym, 5 s hemodynamic lag. ROIs from fMRIPrep aparcaseg (Desikan-Killiany; confirm the VVS label set with the lab).",
   "event_extraction": {
     "bids_root": "/path/to/bids",
     "derivatives_root": "/path/to/bids/derivatives/fmriprep",
@@ -147,7 +147,7 @@
     },
     "feature_weighting": {
       "levels": [
-        "exemplar",
+        "item",
         "category"
       ],
       "category_mask": {
@@ -161,7 +161,7 @@
         "cluster_extent": 10,
         "min_voxels": 10
       },
-      "exemplar_contrast": "all_others",
+      "item_contrast": "all_others",
       "weight_target_patterns": true
     },
     "validation": {

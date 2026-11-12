@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 Shared utilities for the rsaworkflow toolchain: config loading/defaults, BIDS
-filename parsing, the event hierarchy (which rows are items, nuisance or baseline, and how
-items nest into exemplars and categories), the query DSL (same grammar as mvpa-decoding's
+filename parsing, the event hierarchy (which rows are item instances, nuisance or baseline, and how
+item instances nest into items and categories), the query DSL (same grammar as mvpa-decoding's
 model_conditions), and the pattern / RDM / model-RDM primitives used by estimate_patterns.py,
 rsa_workflow.py and group_rsa.py.
 
 Vocabulary (events.tsv rows, coarse -> fine):
   event      one row of an events.tsv
-  item       one event of interest (e.g. one viewing of one image)
-  exemplar   all repeats of the same stimulus -- the finest level of events.hierarchy
+  item instance  one event of interest (e.g. one viewing of one image)
+  item   all repeats of the same stimulus -- the finest level of events.hierarchy
   condition  any coarser level of events.hierarchy (category, subcategory, ...), pooling
-             the exemplars nested in it
+             the items nested in it
 
 RDM computation, RDM comparison and model inference are delegated to
 rsatoolbox (https://github.com/rsagroup/rsatoolbox); GLMs and masking to nilearn.
@@ -40,12 +40,12 @@ BOOL_KEYS = {"and", "or", "not"}
 ANALYSES = {"rdm", "template", "fidelity"}
 VALIDATION_METHODS = {"kim2020", "cv"}
 CV_STRATEGIES = {"per_run", "group_kfold", "explicit_groups"}
-FEATURE_LEVELS = {"exemplar", "category", "none"}
-EXEMPLAR_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
+FEATURE_LEVELS = {"item", "category", "none"}
+ITEM_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
 TARGET_MODES = {"timecourse", "window_mean"}
 
 PATTERN_METHODS = {"glm", "volume_average"}
-ITEM_LEVEL = "item"  # pattern_estimation.level: one pattern per item (event of interest)
+INSTANCE_LEVEL = "item_instance"  # pattern_estimation.level: one pattern per item instance (event of interest)
 RDM_METHODS = {"correlation", "euclidean", "mahalanobis", "crossnobis", "poisson", "poisson_cv"}
 RDM_METHODS_NEEDING_NOISE = {"mahalanobis", "crossnobis"}
 RDM_METHODS_NEEDING_CV = {"crossnobis", "poisson_cv"}
@@ -64,6 +64,8 @@ REGRESSION_METHODS = {"cosine", "corr", "cosine_cov", "corr_cov"}  # what fit_re
 CROSSVAL_SCHEMES = {"leave_one_subject_out", "k_fold"}
 
 SUBJECT_DIR = "sub-{subject}"
+# one output folder per analysis, under <output_dir>/sub-<s>/ and <output_dir>/group/
+STAGE_DIRS = {"rdm": "rdm", "template": "templates", "fidelity": "fidelity"}
 
 
 # =====================================================
@@ -79,14 +81,14 @@ def default_config() -> dict:
             "output_file": "master_spreadsheet.csv",
         },
         "events": {
-            "hierarchy": [],          # coarse -> fine, e.g. ["category", "subcategory", "exemplar"]
-            "item_types": None,       # trial_type values that are items (None: any row with a full hierarchy)
+            "hierarchy": [],          # coarse -> fine, e.g. ["category", "subcategory", "item"]
+            "item_types": None,       # trial_type values that are item instances (None: any row with a full hierarchy)
             "baseline_types": [],     # trial_type values left unmodeled (the implicit baseline)
-            "item_filter": None,      # optional query; item rows failing it are modeled as nuisance
+            "item_filter": None,      # optional query; item-instance rows failing it are modeled as nuisance
         },
         "pattern_estimation": {
             "method": "glm",
-            "level": None,            # "item" or a hierarchy level; None = the finest (exemplar) level
+            "level": None,            # "item_instance" or a hierarchy level; None = the finest (item) level
             "mask_pattern": None,
             "model_unlabeled_events": True,
             "confounds": None,
@@ -155,7 +157,7 @@ def default_config() -> dict:
         "template_rsa": {
             "rois": None,
             "category_level": None,     # hierarchy level used as category (None: the coarsest, if the
-            "subcategory_level": None,  # hierarchy has >1 level); exemplars are the finest level
+            "subcategory_level": None,  # hierarchy has >1 level); items are the finest level
             "timeseries": {
                 "detrend": True,
                 "standardize": "zscore_sample",
@@ -169,7 +171,7 @@ def default_config() -> dict:
                            "end": {"reference": "offset_end", "offset_seconds": 4.0}},
             },
             "feature_weighting": {
-                "levels": ["exemplar"],
+                "levels": ["item"],
                 "category_mask": {
                     "enabled": True,
                     "events": None,
@@ -178,7 +180,7 @@ def default_config() -> dict:
                     "min_voxels": 10,
                     "block_merge_gap_seconds": None,
                 },
-                "exemplar_contrast": "all_others",
+                "item_contrast": "all_others",
                 "weight_target_patterns": True,
             },
             "validation": {
@@ -205,7 +207,7 @@ TEMPLATE_TARGET_DEFAULTS = {
     "events": None,
     "mode": "timecourse",
     "window": None,
-    "comparison_sets": ["target"],  # the trial's own exemplar; "related" / "others" are opt-in controls
+    "comparison_sets": ["target"],  # the trial's own item; "related" / "others" are opt-in controls
     "annotation": {                  # timecourse report markers (mvpa-decoding's timecourse annotation)
         "trial_start_event": None,   # query anchoring each trial (None: the target events themselves)
         "annotation_labels": {},     # {display name: [trial_type, ...]} for positions whose event varies
@@ -223,7 +225,7 @@ TEMPLATE_TARGET_DEFAULTS = {
     },
 }
 COMPARISON_SETS = {"target", "related", "others"}
-EXTRA_SET_LEVELS = {"exemplar", "category", "subcategory"}
+EXTRA_SET_LEVELS = {"item", "category", "subcategory"}
 # keys of earlier template_rsa versions whose (study-specific) analyses now live in the post-hoc
 # notebooks (_interactive_notebooks/); the validator points there instead of silently ignoring them
 POSTHOC_TARGET_KEYS = {"previous_trial_columns", "previous_trial_matches", "item_attributes", "extra_item_columns"}
@@ -265,9 +267,12 @@ def renamed_keys(user_cfg: dict) -> list:
                    "hierarchy (events.tsv columns, coarse -> fine), item_types, baseline_types, item_filter. "
                    "Model RDMs name a hierarchy level; see docs/code_walkthrough.md B2")
     pe = user_cfg.get("pattern_estimation") or {}
+    if pe.get("level") == "item":
+        out.append("pattern_estimation.level: 'item' has been renamed 'item_instance' (one pattern per "
+                   "event of interest; 'item' now names the finest hierarchy level)")
     if "unit" in pe:
-        out.append("pattern_estimation.unit is replaced by pattern_estimation.level: 'item' (one pattern per "
-                   "event of interest; was 'trial') or a hierarchy level (pooled per run; was 'condition_per_run')")
+        out.append("pattern_estimation.unit is replaced by pattern_estimation.level: 'item_instance' (one pattern "
+                   "per event of interest; was 'trial') or a hierarchy level (pooled per run; was 'condition_per_run')")
     out += [f"pattern_estimation.{p}" for p in check_glm_options(pe.get("glm")) if "renamed" in p]
     tr = user_cfg.get("template_rsa") or {}
     for old, new in (("item_column", "the finest events.hierarchy level"),
@@ -276,15 +281,15 @@ def renamed_keys(user_cfg: dict) -> list:
         if old in tr:
             out.append(f"template_rsa.{old} is replaced by {new}")
     fw = tr.get("feature_weighting") or {}
-    if "item_contrast" in fw:
-        out.append("template_rsa.feature_weighting.item_contrast has been renamed exemplar_contrast")
-    if "item" in (fw.get("levels") or []):
-        out.append("template_rsa.feature_weighting.levels: 'item' has been renamed 'exemplar'")
+    if "exemplar_contrast" in fw:
+        out.append("template_rsa.feature_weighting.exemplar_contrast has been renamed item_contrast")
+    if "exemplar" in (fw.get("levels") or []):
+        out.append("template_rsa.feature_weighting.levels: 'exemplar' has been renamed 'item'")
     for name, spec in (tr.get("targets") or {}).items():
         for xname, xs in (spec.get("extra_sets") or {}).items():
-            if isinstance(xs, dict) and xs.get("level", "item") == "item" and "column" in xs:
-                out.append(f"template_rsa.targets.{name}.extra_sets.{xname}.level: 'item' is now 'exemplar' "
-                           "(and is no longer the default; set it explicitly)")
+            if isinstance(xs, dict) and "column" in xs and xs.get("level") in (None, "exemplar"):
+                out.append(f"template_rsa.targets.{name}.extra_sets.{xname}.level: set it explicitly to 'item', "
+                           "'category' or 'subcategory' ('exemplar' has been renamed 'item')")
     for name, spec in (user_cfg.get("model_rdms") or {}).items():
         if isinstance(spec, dict) and "attribute" in spec:
             out.append(f"model_rdms.{name}.attribute is replaced by 'level' (a hierarchy level) or 'groups' "
@@ -307,8 +312,18 @@ def subject_dir(output_dir: str, subject: str) -> str:
     return os.path.join(output_dir, SUBJECT_DIR.format(subject=subject))
 
 
+def stage_dir(output_dir: str, subject: str, analysis: str) -> str:
+    """<output_dir>/sub-<s>/<rdm|templates|fidelity>"""
+    return os.path.join(subject_dir(output_dir, subject), STAGE_DIRS[analysis])
+
+
+def group_stage_dir(output_dir: str, analysis: str) -> str:
+    """<output_dir>/group/<rdm|templates|fidelity>"""
+    return os.path.join(output_dir, "group", STAGE_DIRS[analysis])
+
+
 def pattern_index_path(output_dir: str, subject: str) -> str:
-    return os.path.join(subject_dir(output_dir, subject), "patterns", f"sub-{subject}_patterns.csv")
+    return os.path.join(stage_dir(output_dir, subject, "rdm"), "patterns", f"sub-{subject}_patterns.csv")
 
 
 def safe_name(name) -> str:
@@ -477,15 +492,15 @@ def hierarchy(cfg: dict) -> list:
 
 
 def pattern_level(cfg: dict) -> str:
-    """pattern_estimation.level: "item", or a hierarchy level (default: the finest)."""
+    """pattern_estimation.level: "item_instance", or a hierarchy level (default: the finest)."""
     return cfg["pattern_estimation"].get("level") or (hierarchy(cfg) or [None])[-1]
 
 
 def rdm_level(cfg: dict) -> str:
-    """The hierarchy level whose values are the RDM rows. Item-level patterns are averaged to
-    the finest level (exemplars); pooled patterns are already at their level."""
+    """The hierarchy level whose values are the RDM rows. Item-instance patterns are averaged to
+    the finest level (items); pooled patterns are already at their level."""
     level = pattern_level(cfg)
-    return hierarchy(cfg)[-1] if level == ITEM_LEVEL else level
+    return hierarchy(cfg)[-1] if level == INSTANCE_LEVEL else level
 
 
 def coarser_levels(cfg: dict, level: str) -> list:
@@ -502,7 +517,7 @@ def _clean(series: pd.Series) -> pd.Series:
 def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Each event's role, decided by the events table alone:
       baseline  trial_type in events.baseline_types -> dropped (left unmodeled: the baseline)
-      item      trial_type in events.item_types (or any type, if item_types is unset), a value
+      item_instance  trial_type in events.item_types (or any type, if item_types is unset), a value
                 at every hierarchy level, and passing events.item_filter
       nuisance  everything else -> its own regressor per trial_type
     Hierarchy columns are returned as strings, with n/a / empty as None."""
@@ -516,7 +531,7 @@ def label_events(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         is_item &= df["trial_type"].astype(str).isin(ev["item_types"])
     if ev.get("item_filter"):
         is_item &= evaluate_query_node(ev["item_filter"], df)
-    df["role"] = np.where(is_item, "item", "nuisance")
+    df["role"] = np.where(is_item, "item_instance", "nuisance")
     return df
 
 
@@ -525,8 +540,8 @@ def check_hierarchy(df: pd.DataFrame, cfg: dict) -> tuple:
     ev = cfg["events"]
     levels = hierarchy(cfg)
     if not levels:
-        return ["events.hierarchy: list the events.tsv columns that identify items, coarse -> fine "
-                "(e.g. [\"category\", \"subcategory\", \"exemplar\"])"], []
+        return ["events.hierarchy: list the events.tsv columns that identify item instances, coarse -> fine "
+                "(e.g. [\"category\", \"subcategory\", \"item\"])"], []
     errors = [f"events.hierarchy: column {c!r} is not in the event table" for c in levels if c not in df.columns]
     if len(set(levels)) != len(levels):
         errors.append("events.hierarchy: a column is listed twice")
@@ -541,9 +556,9 @@ def check_hierarchy(df: pd.DataFrame, cfg: dict) -> tuple:
         if unknown:
             warnings.append(f"events.{key}: {unknown} never occur as a trial_type")
     labeled = label_events(df, cfg)
-    items = labeled[labeled["role"] == "item"]
+    items = labeled[labeled["role"] == "item_instance"]
     if items.empty:
-        return ["events: no row qualifies as an item (needs a value at every hierarchy level"
+        return ["events: no row qualifies as an item instance (needs a value at every hierarchy level"
                 + (", a trial_type in item_types" if ev.get("item_types") else "")
                 + (", and to pass item_filter" if ev.get("item_filter") else "") + ")"], warnings
     if ev.get("item_types"):
@@ -552,7 +567,7 @@ def check_hierarchy(df: pd.DataFrame, cfg: dict) -> tuple:
         if len(partial):
             where = f" (e.g. event_index {partial['event_index'].iloc[0]} in {partial['eventfile'].iloc[0]})" \
                 if {"event_index", "eventfile"} <= set(partial.columns) else ""
-            errors.append(f"events: {len(partial)} row(s) with an item trial_type lack a value at some hierarchy "
+            errors.append(f"events: {len(partial)} row(s) with an item-instance trial_type lack a value at some hierarchy "
                           f"level{where}; fill it in, or give those rows another trial_type")
     for coarse, fine in zip(levels, levels[1:]):
         parents = items.groupby(fine)[coarse].unique()
@@ -570,19 +585,19 @@ def check_hierarchy(df: pd.DataFrame, cfg: dict) -> tuple:
 
 
 def resolve_rows(cfg: dict, df: pd.DataFrame) -> list:
-    """RDM rows: the values of rdm_level(cfg) among the item events (all subjects), sorted by
+    """RDM rows: the values of rdm_level(cfg) among the item-instance events (all subjects), sorted by
     their parent levels then by value, so each condition forms one block; plus each row's
     parents ({row: {coarser level: value}}). Stored in cfg["events"]; returns the errors."""
     ev = cfg["events"]
     errors, _ = check_hierarchy(df, cfg)
     level = rdm_level(cfg)
     if not errors and level not in hierarchy(cfg):
-        errors.append(f"pattern_estimation.level {pattern_level(cfg)!r} must be 'item' or one of events.hierarchy "
+        errors.append(f"pattern_estimation.level {pattern_level(cfg)!r} must be 'item_instance' or one of events.hierarchy "
                       f"{hierarchy(cfg)}")
     rows, parents = [], {}
     if not errors:
         items = label_events(df, cfg)
-        items = items[items["role"] == "item"]
+        items = items[items["role"] == "item_instance"]
         up = coarser_levels(cfg, level)
         first = items.drop_duplicates(level).set_index(level)
         parents = {str(v): {c: first.loc[v, c] for c in up} for v in first.index}
@@ -758,7 +773,7 @@ def build_model_rdms(cfg: dict):
 # =====================================================
 
 def build_dataset(measurements: np.ndarray, index_df: pd.DataFrame, descriptors: dict, level: str):
-    """rsatoolbox Dataset; obs descriptors: the RDM-row level (e.g. 'exemplar') and 'run'."""
+    """rsatoolbox Dataset; obs descriptors: the RDM-row level (e.g. 'item') and 'run'."""
     import rsatoolbox
     return rsatoolbox.data.Dataset(
         measurements,
@@ -779,7 +794,7 @@ def clean_measurements(measurements: np.ndarray):
 
 def sort_pattern_index(index: pd.DataFrame, row_order: list, level: str) -> pd.DataFrame:
     """Patterns ordered by RDM row, then run, then event -- the row order of pattern-level
-    RDMs, so each row (e.g. exemplar) forms one contiguous block."""
+    RDMs, so each row (e.g. item) forms one contiguous block."""
     rank = {row: i for i, row in enumerate(row_order)}
     event = index["event_index"] if "event_index" in index else pd.Series(np.nan, index=index.index)
     key = pd.DataFrame({"row": index[level].astype(str).map(rank), "run": index["run_id"].astype(str), "event": event})
@@ -787,7 +802,7 @@ def sort_pattern_index(index: pd.DataFrame, row_order: list, level: str) -> pd.D
 
 
 def pattern_labels(index: pd.DataFrame, level: str) -> list:
-    """'<row>|<run_id>' (plus '|e<event_index>' for item-level patterns): row labels of a
+    """'<row>|<run_id>' (plus '|e<event_index>' for item-instance patterns): row labels of a
     pattern-level RDM."""
     labels = []
     for _, row in index.iterrows():
@@ -817,7 +832,7 @@ def pattern_rdm_method(rdm_cfg: dict) -> str:
 
 
 def compute_pattern_rdm(dataset, rdm_cfg: dict, level: str) -> np.ndarray:
-    """Pattern-level RDM: every pattern (each row x run, or each item) is its own row, in the
+    """Pattern-level RDM: every pattern (each row x run, or each item instance) is its own row, in the
     dataset's row order -- nothing is averaged. A QC / visualization view of the data behind
     the RDM: row structure shows as blocks, run or drift effects as stripes."""
     import rsatoolbox
@@ -832,8 +847,8 @@ def compute_pattern_rdm(dataset, rdm_cfg: dict, level: str) -> np.ndarray:
 
 
 def compute_data_rdm(dataset, rdm_cfg: dict, row_order: list, level: str):
-    """rdm_cfg -> rsatoolbox calc_rdm. Patterns sharing a row value (e.g. an exemplar's runs, or
-    its items) are averaged (or, for cross-validated methods, contrasted across `cv_descriptor`
+    """rdm_cfg -> rsatoolbox calc_rdm. Patterns sharing a row value (e.g. an item's runs, or
+    its item instances) are averaged (or, for cross-validated methods, contrasted across `cv_descriptor`
     folds). Output is reordered to row_order (calc_rdm otherwise sorts alphabetically)."""
     import rsatoolbox
 

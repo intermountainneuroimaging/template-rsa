@@ -1,7 +1,7 @@
 {
   "config_version": "1.0",
   "created_by": "AKH",
-  "notes": "DENOISED variant (motion confound regressors in the GLMs; censoring of the first 10 volumes and FD > 0.9 mm volumes). Paired with config-cv-kim2020-raw.json, identical except for those two settings. Clearvale (CV) with the Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun method: feature-weighted exemplar-template RSA (the paper's 'item-level'). Run from the rsaworkflow repo root. Inputs (all under data/cv-bids, not in git -- on the HPC, symlink data/cv-bids to the Clearvale BIDS folder): events.tsv from examples/clearvale/scripts/make_events.py (PsychoPy stim.csv -> BIDS events; hierarchy category > subcategory (valence_category) > stimulus (image file)), bids-hcp preprocessed BOLD in MNI152NLin6Asym (3 mm, TR 0.46 s -- the same TR as Kim 2020), and motion confounds with framewise displacement from examples/clearvale/scripts/make_confounds.py. Templates: each image's localizer pattern (3 presentations, 1.85 s image shifted 4.6 s), within its category's localizer mask (category vs. others, p < .05, k >= 10, 6-image mini-blocks merged), weighted by its exemplar-vs-others LSA t map. Validation: kim2020 (the published presentation x presentation validation) and cv (leave-one-localizer-run-out, feature selection refit per fold; not in the paper). Fidelity (stage 3) targets: every WM view event (WMpos and WMneg), scored against its own image's template -- a 30-TR (13.8 s) timecourse from view onset (target only), and encoding fidelity (onset + 4.6 s window; related and others opted in as controls). Study-specific statistics (baseline / minus-maintain timecourses, bin tests, operation x valence) go in a post-hoc notebook like _interactive_notebooks/kim2020_removal_operations.ipynb. ROI: Desikan-Killiany ventral visual labels from the subject's MNINonLinear/aparc+aseg (fusiform, inferior temporal, lateral occipital, lingual, parahippocampal); the lab's VVPS mask (/pl/active/banich/studies/Clearvale/masks/mask_vvps_temporal_3mm.nii.gz) can replace it via mask_pattern. Report lines: one per operation (overlay, mvpa-decoding colors: maintain green, suppress red, switch blue, clear orange), averaged over subcategory / valence; switch-target fidelity (switch_item / switch_category) not scored for now.",
+  "notes": "DENOISED variant (motion confound regressors in the GLMs; censoring of the first 10 volumes and FD > 0.9 mm volumes). Paired with config-cv-kim2020-raw.json, identical except for those two settings. Clearvale (CV) with the Kim, Smolker, Smith, Banich & Lewis-Peacock (2020) Nat Commun method: feature-weighted item-template RSA (the paper's 'item-level'). Run from the rsaworkflow repo root. Inputs (all under data/cv-bids, not in git -- on the HPC, symlink data/cv-bids to the Clearvale BIDS folder): events.tsv from examples/clearvale/scripts/make_events.py (PsychoPy stim.csv -> BIDS events; hierarchy category > subcategory (valence_category) > stimulus (image file)), bids-hcp preprocessed BOLD in MNI152NLin6Asym (3 mm, TR 0.46 s -- the same TR as Kim 2020), and motion confounds with framewise displacement from examples/clearvale/scripts/make_confounds.py. Templates: each image's localizer pattern (3 item instances, 1.85 s image shifted 4.6 s), within its category's localizer mask (category vs. others, p < .05, k >= 10, 6-image mini-blocks merged), weighted by its item-vs-others LSA t map. Validation: kim2020 (the published item instance x item instance validation) and cv (leave-one-localizer-run-out, feature selection refit per fold; not in the paper). Fidelity (stage 3) targets: every WM view event (WMpos and WMneg), scored against its own image's template -- a 30-TR (13.8 s) timecourse from view onset (target only), and encoding fidelity (onset + 4.6 s window; related and others opted in as controls). Study-specific statistics (baseline / minus-maintain timecourses, bin tests, operation x valence) go in a post-hoc notebook like _interactive_notebooks/kim2020_removal_operations.ipynb. ROI: Desikan-Killiany ventral visual labels from the subject's MNINonLinear/aparc+aseg (fusiform, inferior temporal, lateral occipital, lingual, parahippocampal); the lab's VVPS mask (/pl/active/banich/studies/Clearvale/masks/mask_vvps_temporal_3mm.nii.gz) can replace it via mask_pattern. Report lines: one per operation (overlay, mvpa-decoding colors: maintain green, suppress red, switch blue, clear orange), averaged over subcategory / valence; switch-target fidelity (switch_item / switch_category) not scored for now.",
   "event_extraction": {
     "bids_root": "data/cv-bids",
     "derivatives_root": "data/cv-bids/derivatives/bids-hcp",
@@ -102,7 +102,7 @@
     },
     "feature_weighting": {
       "levels": [
-        "exemplar"
+        "item"
       ],
       "category_mask": {
         "enabled": true,
@@ -111,7 +111,7 @@
         "min_voxels": 10,
         "block_merge_gap_seconds": 5.0
       },
-      "exemplar_contrast": "all_others",
+      "item_contrast": "all_others",
       "weight_target_patterns": true
     },
     "validation": {

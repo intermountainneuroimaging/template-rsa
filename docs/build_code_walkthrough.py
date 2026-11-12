@@ -57,7 +57,7 @@ The methodological core of both projects, as code. Each block below is copied fr
 
 **fMRIPrep output → nuisance model → patterns or cleaned time series (betaestimation) → event table → RDM analysis or template RSA (rsaworkflow) → group table → post-hoc notebooks.**
 
-**Vocabulary.** An *event* is one events.tsv row. An *item* is one event of interest (one viewing of one image). An *exemplar* is all repeats of the same stimulus: the finest level of `events.hierarchy`. A *condition* is any coarser level (category, subcategory), pooling the exemplars nested in it. The papers behind Part D say "item" for what is called an exemplar here.
+**Vocabulary.** An *event* is one events.tsv row. An *item* is one event of interest (one viewing of one image). An *item* is all repeats of the same stimulus: the finest level of `events.hierarchy`. A *condition* is any coarser level (category, subcategory), pooling the items nested in it. The papers behind Part D say "item" for what is called an item here.
 
 Formal definitions of the lab's template method are in [lab_methods.md](lab_methods.md); this document shows where each piece lives in code and which choices it encodes. Points that a reviewer should know about are marked **▲ Note**.
 
@@ -210,7 +210,7 @@ Atlas ROIs are the union of integer labels (e.g. the Desikan-Killiany ids in fMR
 
 ## A5. One pattern per label (pooled), or per item (LSA)
 
-`estimate_run_patterns` takes an events table where `label` marks the items, i.e. the events of interest (NaN = not of interest), and turns labels into regressor names. A label is whatever the items are pooled by: an exemplar, or a condition such as a category:
+`estimate_run_patterns` takes an events table where `label` marks the items, i.e. the events of interest (NaN = not of interest), and turns labels into regressor names. A label is whatever the items are pooled by: an item, or a condition such as a category:
 
 @@ betaestimation/betaestimation/estimate.py | _regressor
 
@@ -243,12 +243,12 @@ The cleaned series (A3) is averaged over each event's volumes after shifting by 
 
 ## A8. One GLM across several runs (SPM-style multi-session)
 
-Template RSA needs exemplar-vs-others contrasts where an exemplar may appear in only one run (Bretton et al.: each scene is shown once in the pre-test). A per-run GLM cannot estimate that contrast, so the runs are stacked into one model:
+Template RSA needs item-vs-others contrasts where an item may appear in only one run (Bretton et al.: each scene is shown once in the pre-test). A per-run GLM cannot estimate that contrast, so the runs are stacked into one model:
 
 @@ betaestimation/betaestimation/glm.py | fit_concatenated
 
 - Columns whose name starts with `shared_prefix` (`exm_…`, `cat_…`) are **shared across runs**; every other column — nuisance events, cosine drifts, the intercept, confounds — is renamed `run<k>_…` and therefore **run-specific** (block-diagonal), as SPM does for sessions.
-- `fillna(0)` makes a run's design zero for exemplars it never shows.
+- `fillna(0)` makes a run's design zero for items it never shows.
 - Censored rows are dropped per run before stacking.
 - ▲ Note: `run_glm` estimates the AR(1) noise model on the stacked series, so a few lag pairs straddle run boundaries; SPM estimates serial correlations per session. The effect on the t-maps is small (one boundary per run), and `noise_model: "ols"` avoids it entirely.
 
@@ -256,7 +256,7 @@ Template RSA needs exemplar-vs-others contrasts where an exemplar may appear in 
 
 @@ betaestimation/betaestimation/glm.py | versus_others
 
-`versus_others` builds the "exemplar vs. the mean of the other exemplars" weights used for exemplar-selective t-maps.
+`versus_others` builds the "item vs. the mean of the other items" weights used for item-selective t-maps.
 
 ## A9. Cluster-extent filtering
 
@@ -279,20 +279,20 @@ One row per event, every events.tsv column kept. Fixation / block markers / post
 The events.tsv files carry the stimulus hierarchy as columns, coarse to fine, and the config only names them:
 
 ```
-onset  duration  trial_type  category  subcategory  exemplar
-10.0   2.0       stim        animal    mammal       dog01      <- item
+onset  duration  trial_type  category  subcategory  item
+10.0   2.0       stim        animal    mammal       dog01      <- item instance
 14.0   1.0       probe       n/a       n/a          n/a        <- nuisance
 16.0   8.0       rest        n/a       n/a          n/a        <- baseline
-22.0   2.0       stim        animal    mammal       dog01      <- item (a repeat of exemplar dog01)
+22.0   2.0       stim        animal    mammal       dog01      <- item instance (a repeat of item dog01)
 ```
 
 ```json
 "events": {
-  "hierarchy": ["category", "subcategory", "exemplar"],
+  "hierarchy": ["category", "subcategory", "item"],
   "item_types": ["stim"],
   "baseline_types": ["rest"]
 },
-"pattern_estimation": {"level": "exemplar"},
+"pattern_estimation": {"level": "item"},
 "model_rdms": {
   "category":    {"type": "categorical", "level": "category"},
   "subcategory": {"type": "categorical", "level": "subcategory"}
@@ -302,10 +302,10 @@ onset  duration  trial_type  category  subcategory  exemplar
 @@ rsaworkflow/utils/rsa_common.py | label_events
 
 - **baseline:** `trial_type` in `baseline_types`. Dropped, so it stays in the implicit baseline every beta is measured against.
-- **item:** a value at every hierarchy level (plus a `trial_type` in `item_types` and passing `item_filter`, when those are set).
+- **item instance:** a value at every hierarchy level (plus a `trial_type` in `item_types` and passing `item_filter`, when those are set).
 - **nuisance:** everything else, e.g. probes, cues, or incorrect trials that fail `item_filter`. Each `trial_type` gets its own regressor (A5).
 
-`pattern_estimation.level` picks what one pattern is: `"item"` (one per event of interest) or a hierarchy level, whose items are pooled per run (`"exemplar"`: an exemplar's repeats; `"category"`: all its exemplars).
+`pattern_estimation.level` picks what one pattern is: `"item_instance"` (one per event of interest) or a hierarchy level, whose item instances are pooled per run (`"item"`: an item's repeats; `"category"`: all its items).
 
 @@ rsaworkflow/utils/rsa_common.py | check_hierarchy | [["for coarse, fine in zip(levels, levels[1:]):", "errors.append(f\"{lvl} values"]]
 
@@ -314,12 +314,12 @@ onset  duration  trial_type  category  subcategory  exemplar
 
 @@ rsaworkflow/utils/rsa_common.py | resolve_rows | [["items = label_events(df, cfg)", "rows = sorted(parents"]]
 
-The RDM rows are the values of the RDM level (the pattern level, or the exemplars when patterns are items), ordered by their parent levels, so each category forms a block in the figures. The rows are resolved on the whole event table, so every subject gets the same row list and order. Each row's parents are what the categorical models read.
+The RDM rows are the values of the RDM level (the pattern level, or the items when patterns are item instances), ordered by their parent levels, so each category forms a block in the figures. The rows are resolved on the whole event table, so every subject gets the same row list and order. Each row's parents are what the categorical models read.
 
-**Hierarchy levels vs. the RDM: a worked example.** Take four exemplars under one coarser level, `category`:
+**Hierarchy levels vs. the RDM: a worked example.** Take four items under one coarser level, `category`:
 
 ```
-onset  trial_type  category  exemplar
+onset  trial_type  category  item
 10     stim        animal    dog01
 14     stim        animal    cat02
 18     stim        tool      whisk02
@@ -327,7 +327,7 @@ onset  trial_type  category  exemplar
 ...    (repeated across runs)
 ```
 
-*The pattern level gives the data.* `level: "exemplar"` makes one beta map per exemplar per run. The RDM step compares every pair of those patterns and produces the **data RDM**, which says how differently the region responded to each pair (illustrative numbers):
+*The pattern level gives the data.* `level: "item"` makes one beta map per item per run. The RDM step compares every pair of those patterns and produces the **data RDM**, which says how differently the region responded to each pair (illustrative numbers):
 
 |          | dog01 | cat02 | whisk02 | hammer01 |
 |---|---|---|---|---|
@@ -352,7 +352,7 @@ The comparison step (C3) correlates the two RDMs. Here they agree: dog–cat is 
 - **The pattern level** says *which patterns to estimate*: the rows of the data RDM.
 - **A coarser level** says *which of those rows belong together*: one model RDM per level.
 
-The exemplar name alone carries no grouping. Nothing in `"dog01"` says it goes with `"cat02"` rather than `"whisk02"`; the category column is where that is written down. A subcategory level (mammal / bird / kitchen / workshop) gives a second, finer model tested against the same data RDM, so you can ask whether the region tracks only the coarse category or the subcategory too. Coarser levels never change which betas are estimated; to get one beta per category instead, set `level: "category"`.
+The item name alone carries no grouping. Nothing in `"dog01"` says it goes with `"cat02"` rather than `"whisk02"`; the category column is where that is written down. A subcategory level (mammal / bird / kitchen / workshop) gives a second, finer model tested against the same data RDM, so you can ask whether the region tracks only the coarse category or the subcategory too. Coarser levels never change which betas are estimated; to get one beta per category instead, set `level: "category"`.
 
 **Groupings that cross the hierarchy** (stimulus identity across task phases, a cue status) can't be levels, because they don't nest. They stay as their own events.tsv columns, for `item_filter`, template-RSA queries and post-hoc notebooks, or become an explicit model: `{"type": "categorical", "groups": {row: group}}`. A crossed design whose cells you want as RDM rows (phase × stimulus) gets a column naming the combination (`encoding_0`), nested under the phase.
 
@@ -380,7 +380,7 @@ Voxels that are non-finite or constant across all patterns (outside the brain ma
 
 @@ rsaworkflow/utils/rsa_common.py | compute_data_rdm
 
-- `descriptor=level` (e.g. `"exemplar"`): rsatoolbox averages each row's patterns (all runs, or all items) before computing correlation or Euclidean distances.
+- `descriptor=level` (e.g. `"item"`): rsatoolbox averages each row's patterns (all runs, or all item instances) before computing correlation or Euclidean distances.
 - **Crossnobis** (`cv_descriptor="run"`): distances are computed between run-wise pattern differences from *different* runs, so noise that is independent across runs cancels in expectation — an unbiased distance whose expected value is 0 for identical patterns.
 - Mahalanobis / crossnobis whiten with a noise precision estimated from the patterns' residuals around their row means (`prec_from_measurements`, shrinkage towards the diagonal by default). ▲ Note: the precision is estimated from the same patterns the distances use (standard in rsatoolbox examples); with few runs, a residual-based estimate from the first-level GLMs would be the stricter alternative.
 - `calc_rdm` sorts rows alphabetically; the RDM is reordered to the hierarchy order (B2) so it matches the model RDMs.
@@ -429,11 +429,11 @@ Every run in the template phase and the category-mask events (template stage), o
 - For each category, category vs. the mean of the others → **t map** (kept as the category-level weights) and **z map**, thresholded one-sided at `p_threshold` and cluster-filtered (A9).
 - ▲ Note: if fewer than `min_voxels` survive, the whole ROI is used and the fallback is recorded — not part of the published method (see lab_methods.md §4.5).
 
-## D3. Exemplar weights (the papers' item weights)
+## D3. Item weights (the papers' item weights)
 
-@@ rsaworkflow/workflows/template_rsa.py | feature_selection | [["if \"exemplar\" in fw[\"levels\"]:", "exemplar_t[row[\"exemplar\"]] = contrast_stat("]]
+@@ rsaworkflow/workflows/template_rsa.py | feature_selection | [["if \"item\" in fw[\"levels\"]:", "item_t[row[\"item\"]] = contrast_stat("]]
 
-Least-squares-all over the template runs: one shared regressor per template exemplar (the finest `events.hierarchy` level), and each exemplar's weights are the t-values of **exemplar vs. the mean of the other exemplars** (or only those of its category / subcategory, the hierarchy levels named by `category_level` / `subcategory_level`). Template-phase events that are *not* template events — e.g. Bretton's `old_<exemplar>` scenes — fall into `glm_events`' nuisance branch, each with its own regressor because their `trial_type` is unique:
+Least-squares-all over the template runs: one shared regressor per template item (the finest `events.hierarchy` level), and each item's weights are the t-values of **item vs. the mean of the other items** (or only those of its category / subcategory, the hierarchy levels named by `category_level` / `subcategory_level`). Template-phase events that are *not* template events — e.g. Bretton's `old_<item>` scenes — fall into `glm_events`' nuisance branch, each with its own regressor because their `trial_type` is unique:
 
 @@ rsaworkflow/workflows/template_rsa.py | glm_events
 
@@ -441,7 +441,7 @@ Least-squares-all over the template runs: one shared regressor per template exem
 
 @@ rsaworkflow/workflows/template_rsa.py | build_template_sets | [["occurrences = {}", "templates[item] = np.mean("]]
 
-A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones. The templates are built from all template runs and saved, with their masks and weights, for the fidelity stage:
+A template is the item's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the item's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the item's t map, its category's t map, or ones. The templates are built from all template runs and saved, with their masks and weights, for the fidelity stage:
 
 @@ rsaworkflow/workflows/template_rsa.py | save_template_set
 
@@ -451,29 +451,29 @@ A template is the exemplar's z-scored pattern — averaged over the volumes of `
 
 @@ rsaworkflow/workflows/template_rsa.py | score_matrix
 
-- The target pattern is weighted by the **same exemplar's** weights before correlating (from the authors' code: `ytarg_pat .* xbeta`), so template and target live in the same feature space.
+- The target pattern is weighted by the **same item's** weights before correlating (from the authors' code: `ytarg_pat .* xbeta`), so template and target live in the same feature space.
 - `score_matrix` computes the Pearson r of **every volume of a run** with every template in one vectorized pass; trial timecourses are then just indexing into it. Censored volumes (NaN rows) yield NaN scores.
 
 @@ rsaworkflow/workflows/template_rsa.py | comparison_sets
 
 @@ rsaworkflow/workflows/template_fidelity.py | extra_sets
 
-@@ rsaworkflow/workflows/template_fidelity.py | score_targets | [["for comp, members in sets.items():", "\"n_exemplars\": len(members), \"r\": r, \"z\": fisher_z(r)})"]]
+@@ rsaworkflow/workflows/template_fidelity.py | score_targets | [["for comp, members in sets.items():", "\"n_items\": len(members), \"r\": r, \"z\": fisher_z(r)})"]]
 
-- A set's score is the **mean Pearson r over its exemplars, then Fisher z** (the authors' order of operations), for `target` (the trial's own exemplar), `related` (other exemplars of its category), `others` (exemplars of other categories) and any `extra_sets` — e.g. every template of the category named in `replace_category`.
+- A set's score is the **mean Pearson r over its items, then Fisher z** (the authors' order of operations), for `target` (the trial's own item), `related` (other items of its category), `others` (items of other categories) and any `extra_sets` — e.g. every template of the category named in `replace_category`.
 - Every events.tsv column is carried into each row (`meta`), which is what lets the post-hoc notebooks define memory outcomes, previous trials or operations later without touching the core.
 
 ## D6. Template validation
 
 @@ rsaworkflow/workflows/template_rsa.py | validate_kim2020 | [["PW = np.array(", "pairs.append((\"kim2020\""]]
 
-`kim2020` is the published validation (Kim et al. 2020, `rsa_decode_02_item.m`): every presentation (item × run) against every other, each pattern weighted by **its own** item's weights and both cut to the row item's category mask, Fisher z per pair. ▲ Note: as published, the masks and weights (D2–D3) come from all template runs, including the presentation being validated.
+`kim2020` is the published validation (Kim et al. 2020, `rsa_decode_02_item.m`): every item instance (item × run) against every other, each pattern weighted by **its own** item's weights and both cut to the row item's category mask, Fisher z per pair. ▲ Note: as published, the masks and weights (D2–D3) come from all template runs, including the item instance being validated.
 
 @@ rsaworkflow/workflows/template_rsa.py | resolve_folds
 
 @@ rsaworkflow/workflows/template_rsa.py | validate_cv | [["for fold, train, test in folds:", "rs = {j: ts.score(pat, j) for j in ts.templates}"]]
 
-`cv` (not in the papers; mvpa-decoding's `kfold_cv`) re-fits D2–D4 on the training runs of each fold and scores each held-out presentation against every fold template exactly as a target is scored (D5) — the fully held-out check.
+`cv` (not in the papers; mvpa-decoding's `kfold_cv`) re-fits D2–D4 on the training runs of each fold and scores each held-out item instance against every fold template exactly as a target is scored (D5) — the fully held-out check.
 
 ## D7. The group raw table (fidelity group stage)
 
@@ -512,7 +512,7 @@ Computed on the event sequence within each run, **before** any exclusion in the 
 @@ rsaworkflow/_interactive_notebooks/rsa_posthoc_common.py | mixed_model | [["try:", "ci = fit.conf_int()"]]
 
 - Bin tests: one-sample t per operation × bin, FDR across the bins of each operation.
-- Paired contrasts use only subjects with **both** levels (e.g. Bretton's n = 18 with remembered and forgotten exemplars), with a subject-resampling bootstrap CI of the difference.
+- Paired contrasts use only subjects with **both** levels (e.g. Bretton's n = 18 with remembered and forgotten items), with a subject-resampling bootstrap CI of the difference.
 - Mixed models use every trial with subject as the grouping factor; `re_formula="~C(memory)"` gives random slopes, i.e. (1 + memory | subject).
 '''
 
