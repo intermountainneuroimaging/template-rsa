@@ -84,11 +84,26 @@ python workflows/generate_report.py --config CONFIG                 # group PDF
 python workflows/generate_report.py --config CONFIG --subject 1     # single-subject PDF
 ```
 
-On a cluster, set `pipeline.subjects` in the config, then:
+On the cluster (SLURM; the job settings follow mvpa-decoding: `--account=ucb-general --partition=acpu
+--qos=cpu-normal`), pass the config as the only argument:
 
 ```bash
-PYTHON=~/.venvs/rsaworkflow/bin/python SBATCH_EXTRA="--account=X --partition=Y" bash slurm/0_submit_rsa_pipeline.sh CONFIG
+bash slurm/0_submit_rsa_pipeline.sh CONFIG               # all three stages, chained
+bash slurm/0_submit_rsa_pipeline.sh CONFIG 090,091       # group stages limited to these subjects
+sbatch slurm/2_batch_run_rsa_workflow.sh CONFIG          # or one stage on its own, from the repo root
 ```
+
+| Script | Job |
+|---|---|
+| `1_sbatch_generate_master_spreadsheet.sh` | master spreadsheet + config validation |
+| `2_batch_run_rsa_workflow.sh` | array, one task per subject: `pipeline.analyses` + the subject's report |
+| `3_sbatch_generate_report.sh` | group stages + the group report (optional subject list) |
+
+The subjects are `pipeline.subjects`, or every `sub-*` folder under `event_extraction.derivatives_root`
+when that is not set; `0_submit` sizes the array to match. The jobs activate the conda environment
+`$RSA_CONDA_ENV` (default `incenv`), which needs `requirements.txt` installed, and log to `<repo>/logs/`.
+A stage submitted on its own finds the repo from `pipeline.scripts_dir` in the config, else from the
+directory `sbatch` was run in.
 
 Relative paths in the config are resolved against the directory you run from (the repo root).
 

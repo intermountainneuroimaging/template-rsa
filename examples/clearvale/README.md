@@ -77,14 +77,14 @@ Flywheel steps use the saved CLI login (`fw login` once) or, in notebooks 01 and
    python examples/clearvale/scripts/fetch_bold.py --subject 090      # needs the Flywheel SDK
    python examples/clearvale/scripts/make_confounds.py --subject 090 --session A1
    ```
-4. **Analysis:** list the subjects in the config's `pipeline.subjects`, then
+4. **Analysis:** list the subjects in the config's `pipeline.subjects` (or set it to `null` to run every
+   subject under `derivatives/bids-hcp`), then
    ```bash
    python workflows/run_pipeline.py --config examples/clearvale/configs/config-cv-kim2020-denoised.json
    ```
    or, on the cluster,
    ```bash
-   PYTHON=/path/to/venv/bin/python SBATCH_EXTRA="--account=X --partition=Y" \
-       bash slurm/0_submit_rsa_pipeline.sh examples/clearvale/configs/config-cv-kim2020-denoised.json
+   bash slurm/0_submit_rsa_pipeline.sh examples/clearvale/configs/config-cv-kim2020-denoised.json
    ```
    Repeat with `config-cv-kim2020-raw.json` for the no-denoising comparison.
 

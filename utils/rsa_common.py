@@ -193,6 +193,7 @@ def default_config() -> dict:
             "targets": {},
         },
         "pipeline": {
+            "scripts_dir": None,      # repo root for the SLURM stage scripts (else: the sbatch directory)
             "output_dir": "out",
             "subjects": None,
             "analyses": ["rdm"],      # any of "rdm", "template", "fidelity" (fidelity needs template)

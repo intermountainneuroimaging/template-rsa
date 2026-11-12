@@ -6,6 +6,7 @@ out/
 *.nii.gz
 *.npz
 slurm/logs/
+logs/
 
 # Python / Jupyter
 __pycache__/
