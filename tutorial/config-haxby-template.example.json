@@ -135,6 +135,12 @@
           ]
         }
       }
+    },
+    "validation": {
+      "enabled": true,
+      "methods": [
+        "kim2020"
+      ]
     }
   },
   "pipeline": {
@@ -148,7 +154,8 @@
       "6"
     ],
     "analyses": [
-      "template"
+      "template",
+      "decoding"
     ]
   }
 }

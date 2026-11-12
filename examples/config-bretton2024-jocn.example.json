@@ -165,7 +165,10 @@
       "weight_target_patterns": true
     },
     "validation": {
-      "enabled": false
+      "enabled": false,
+      "methods": [
+        "kim2020"
+      ]
     },
     "targets": {
       "manipulation": {
@@ -254,7 +257,8 @@
     "output_dir": "out/bretton2024",
     "subjects": null,
     "analyses": [
-      "template"
+      "template",
+      "decoding"
     ]
   }
 }

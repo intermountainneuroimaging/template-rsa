@@ -133,6 +133,7 @@ def make_config(root, **template_overrides) -> dict:
             "category_level": "category", "subcategory_level": "subcategory",
             "timeseries": {"high_pass": 0.01},
             "templates": {"events": q("task", "localizer"), "window": lag()},
+            "validation": {"methods": ["kim2020", "cv"], "cross_validation": {"strategy": "per_run"}},
             "feature_weighting": {"levels": ["exemplar", "category"],
                                   "category_mask": {"p_threshold": 0.05, "cluster_extent": 5}},
             "targets": {
@@ -153,7 +154,7 @@ def make_config(root, **template_overrides) -> dict:
                     "group": {"comparisons": ["target", "related", "others"]}},
             },
         },
-        "pipeline": {"output_dir": str(root / "out"), "analyses": ["template"]},
+        "pipeline": {"output_dir": str(root / "out"), "analyses": ["template", "decoding"]},
     }
     for key, value in template_overrides.items():
         user["template_rsa"][key] = value

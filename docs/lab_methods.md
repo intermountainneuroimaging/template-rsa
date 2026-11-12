@@ -11,7 +11,9 @@ Configs: [examples/config-kim2020-ncomms.example.json](../examples/config-kim202
 
 Code is split in two:
 
-- **Core pipeline (design-agnostic):** [workflows/template_rsa.py](../workflows/template_rsa.py) (subject level) and [workflows/group_template_rsa.py](../workflows/group_template_rsa.py) (group raw table, descriptive summaries, comparison-set check).
+- **Core pipeline (design-agnostic), two analysis stages:**
+  - *template* — [workflows/template_rsa.py](../workflows/template_rsa.py) (subject: category masks, weights, templates saved to disk, template validation) and [workflows/group_template_rsa.py](../workflows/group_template_rsa.py) (validation across subjects)
+  - *decoding* — [workflows/decode_templates.py](../workflows/decode_templates.py) (subject: target events scored against the saved templates) and [workflows/group_decoding.py](../workflows/group_decoding.py) (group raw table, descriptive summaries, comparison-set check)
 - **Study-specific post-hoc analyses:** [_interactive_notebooks/kim2020_removal_operations.ipynb](../_interactive_notebooks/kim2020_removal_operations.ipynb) and [_interactive_notebooks/bretton2024_ltm_fidelity.ipynb](../_interactive_notebooks/bretton2024_ltm_fidelity.ipynb), on helpers in [rsa_posthoc_common.py](../_interactive_notebooks/rsa_posthoc_common.py).
 
 ---
@@ -30,12 +32,12 @@ The RDM config (`events.hierarchy` → RDM → `model_rdms`) has no slot for tem
 
 | Change | Where |
 |---|---|
-| New analysis family, selected with `pipeline.analyses: ["template"]` (alongside or instead of `"rdm"`) | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
+| New analysis families, selected with `pipeline.analyses: ["template", "decoding"]` (alongside or instead of `"rdm"`): *template* builds and validates the templates, *decoding* scores target events against them | `utils/rsa_common.py::default_config`, `workflows/run_pipeline.py` |
 | New `template_rsa` config section: `templates`, `feature_weighting`, named `targets`, per-target `group` | same; validated by `utils/validate_rsa_config.py::validate_template` |
 | Time windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}` | `rsa_common.py::validate_window`, `window_volumes` |
 | Atlas-label ROIs: `{"atlas_pattern", "labels"}` (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid | `rsa_common.py::resolve_roi_mask` (used by both analysis families) |
-| Subject stage, group stage and report pages for template RSA | `template_rsa.py`, `group_template_rsa.py`, `generate_report.py::template_pages` |
-| **Core / post-hoc split.** The core stops at a group raw table (`group/template_rsa/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
+| Subject and group stages for each, and common report pages (workflow diagram, template validation with every presentation shown separately, descriptive decoding) | `template_rsa.py`, `decode_templates.py`, `group_template_rsa.py`, `group_decoding.py`, `generate_report.py::template_section`, `decoding_section` |
+| **Core / post-hoc split.** The core stops at a group raw table (`group/decoding/raw/…_scores.csv`, every events.tsv column carried). Design-specific statistics run in notebooks, as in mvpa-decoding: reference conditions, memory flags, trial N+1 sequences, contrasts and mixed models. | `_interactive_notebooks/` |
 | `extra_sets`: score a trial against the templates named in any events column, at exemplar, category or subcategory level (e.g. the replacement category) | `template_rsa.py::extra_sets` |
 
 The config layout deliberately mirrors mvpa-decoding: `templates` ≈ `training`, `targets` ≈ `testing` / `timecourse_decoding`, and `window` uses the same syntax. A lab config can therefore hold both the decoding and the RSA settings for one study.
@@ -109,7 +111,21 @@ $$T_i = \frac{1}{|E_i|}\sum_{e\in E_i} p_{W_\text{tmpl}}(e),\qquad \tilde T_i = 
 
 $\odot$ is the element-wise product. In [B], $|E_i| = 1$: the template is the item's single pre-test exposure.
 
-**Workflow:** `templates.events`, `templates.window` → `template_rsa.py::build_template_sets`.
+**Workflow:** `templates.events`, `templates.window` → `template_rsa.py::build_template_sets`. The templates are built from all template runs and saved (`…_templates.npz`) for the decoding stage.
+
+### 1.5b Template validation
+
+Let $u$ index presentation units: one per item per template run, $p_u$ = the mean window pattern of that item's presentations in that run (in [K] each item is shown once per run, so a unit is one presentation).
+
+**`kim2020` (published; [K] code, `rsa_decode_02_item.m`, "targ vs. non-targ").** For every ordered pair of units $u \neq v$ with items $i_u, i_v$:
+
+$$z_{uv} = \operatorname{artanh}\operatorname{corr}\!\big((p_u\odot w_{i_u})|_{M_{c(i_u)}},\ (p_v\odot w_{i_v})|_{M_{c(i_u)}}\big)$$
+
+Each pattern is weighted by **its own** item's weights, and both are cut to the **row** item's category mask. Masks and weights come from all template runs. A unit's target score is the mean $z_{uv}$ over the other units of the same item; related, over units of other items in the same category; others, over units of other categories.
+
+**`cv` (not in the papers; from mvpa-decoding's `kfold_cv`).** Folds over the template runs (`per_run`, `group_kfold`, `explicit_groups`). In fold $k$, the category masks, weights and templates $\tilde T^{(k)}_j$ are refit on the training runs only. Each presentation $e$ in the held-out run is scored against every fold template exactly as a target (§1.6): $r_j = \operatorname{corr}(\tilde T^{(k)}_j, (p(e)\odot w^{(k)}_j)|_{M^{(k)}_{c(j)}})$, then mean r over the set and Fisher z.
+
+**Workflow:** `validation.methods`, `validation.cross_validation` → `template_rsa.py::validate_kim2020`, `validate_cv`, `resolve_folds`.
 
 ### 1.6 Scoring a target pattern
 
@@ -199,7 +215,8 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 | Category masks | SPM GLM on localizer, mini-block boxcars + motion, cat > others, p < .05, k = 10 | `category_mask` with `block_merge_gap_seconds: 5`, `hrf_model: spm`, `drift_model: cosine`, AR(1) | ≈ nilearn instead of SPM; FD-censored volumes are also left out of the GLM |
 | Item weights | SPM LSA, item vs. 53 others, t-values | `exemplar_contrast: all_others`, `levels: [exemplar]` | ✅ |
 | Templates | z-scored, 3 presentation TRs + 10-TR shift, averaged over 5 runs, × weights | `templates.window` onset + 4.6 → offset + 4.6 | ✅ |
-| Localizer validation (Fig. 3b) | Correlations among the 5 repetitions × 6 exemplars per subcategory; same > related > others | `validation` (leave-one-event-out templates); RDM path's pattern-level RDM for the matrix view | ≈ cross-validated variant |
+| Localizer validation (Fig. 3b) | Every presentation × every other; each pattern × its own item's t-map, inside the first item's category mask; z per pair; same > related > others | `validation.methods: ["kim2020"]` → `validate_kim2020` (§1.5b) | ✅ (an earlier leave-one-presentation-out version of this workflow was not the published method and has been removed) |
+| Cross-validated localizer validation | — | `validation.methods: ["cv"]`: masks, weights and templates refit per fold | not in the paper (sensitivity check) |
 | Target weighting; mean r → z | `ytarg .* xbeta`; mean r over set, then Fisher z | `weight_target_patterns: true`; `S_A` | ✅ |
 | Item-level timecourse (Fig. 4b) | 30 unshifted TRs, baseline first 6 TRs, minus maintain, 5 × 3-TR blocks, one-sample t, rm-ANOVA, pairwise FDR | core `study_timecourse` → notebook §2 | ✅ |
 | Replace-new tracking (Fig. 4a, light blue) | category-classifier evidence for the replacement category on replace trials | core `extra_sets.replacement` (category templates) → notebook §3 | ≈ item-RSA counterpart of a classifier measure |
@@ -208,6 +225,39 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 | Trial-balanced bootstrap (15 trials, 1000 iterations) | supplementary | — | ✗ (subject bootstrap of the contrast instead) |
 | Category / subcategory classifiers, operation classifiers, importance maps, between-subject and hyperaligned classification, sliding-window classifiers | MVPA | mvpa-decoding | MVPA |
 | Univariate FEAT contrasts | FSL | — | ✗ (out of scope) |
+
+### Kim et al. (2020): this workflow compared with the released code
+
+The released MATLAB code was read line by line: `rsa_decode_01.m` (GLMs) and `rsa_decode_02_item.m` (templates, localizer validation, study-phase timecourse).
+
+**Templates used for decoding: match.**
+
+| Step | [K] code | This workflow | |
+|---|---|---|---|
+| Category masks | One SPM model; all localizer runs concatenated into one session; category > others, p < .05, k = 10 | Concatenated GLM over all template runs, same contrast and threshold | ≈ nilearn instead of SPM |
+| Item weights | spmT of item vs. all others, same model | LSA exemplar-vs-all-others t-map, all runs | ✅ |
+| Per-presentation pattern | Mean of z-scored, lag-shifted volumes; spike volumes excluded | `event_pattern`: mean of the window; censored volumes excluded | ✅ |
+| Template | Mean over runs of (pattern × own item t), inside own category mask | Mean pattern × item t inside own category mask (the same, since the weighting is linear) | ✅ |
+
+**Decoding (study-phase timecourse): match.**
+
+| Step | [K] code | This workflow | |
+|---|---|---|---|
+| Score vs. template j | Study volume inside j's category mask × j's t-map (`ytarg_pat .* xbeta`), `corr2` with template j | `TemplateSet.score` / `score_matrix` with `weight_target_patterns: true` | ✅ |
+| Sets | target = own item; related = other items of the category; others = other categories | `comparison_sets` with `related_level: category` | ✅ |
+| Aggregation | Mean r over the set's items, then Fisher z, per TR; spike TRs skipped | Same; censored volumes give no score | ✅ |
+
+The study runs are separate from the localizer runs, so this is already a held-out test.
+
+**Localizer validation.** The earlier version of this workflow scored a presentation against its own template rebuilt without it, with both vectors weighted by template j's map. That was not the published method. It is replaced by `kim2020` (§1.5b). On one Clearvale subject (sub-090, VVS, mean Fisher z, target / related / others):
+
+| Validation | target | related | others |
+|---|---|---|---|
+| `kim2020` (published) | 0.210 | 0.026 | 0.005 |
+| Earlier leave-one-presentation-out (removed) | 0.258 | 0.114 | 0.027 |
+| `cv` (feature selection refit per fold) | 0.162 | 0.114 | 0.032 |
+
+In the published method, feature selection sees every presentation, including the one being validated. The `cv` method shows how much that matters: target drops by about 0.1 when the masks and weights are refit without the held-out run. Decoding of separate runs is unaffected.
 
 ### Bretton et al. (2024)
 
@@ -238,7 +288,7 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 
   Core checks ([tests/test_template_rsa.py](../tests/test_template_rsa.py)):
   - category masks split the ROI correctly
-  - target > related > others (validation and post-test)
+  - validation: `cv` ranks target > related > others; `kim2020` puts target well above both (own-item weights remove most shared category signal from the synthetic patterns); post-test target > related > others
   - the replacement set exists only on replace trials and overtakes the replaced item
   - maintain > suppress late in the trial
   - selecting a subset of template items through `templates.events`
@@ -282,16 +332,20 @@ The same analysis is repeated in the VVS, PFC, parietal and hippocampus ROIs.
 python workflows/run_pipeline.py --config examples/config-kim2020-ncomms.example.json
 ```
 
-The command runs the event table, validation, template RSA for every subject, the group raw table and summaries, and the report. Then open the study's notebook in `_interactive_notebooks/`, set its configuration cell, and run all cells. The stages can also be run separately:
+The command runs the event table, validation, the template stage (templates + validation) and the decoding stage for every subject, the group stages, and the report. Then open the study's notebook in `_interactive_notebooks/`, set its configuration cell, and run all cells. The stages can also be run separately:
 
 ```bash
 python workflows/template_rsa.py --config CONFIG --subject 01
+python workflows/decode_templates.py --config CONFIG --subject 01
 python workflows/group_template_rsa.py --config CONFIG
+python workflows/group_decoding.py --config CONFIG
 python workflows/generate_report.py --config CONFIG
 ```
 
 Outputs:
 
-- `<output_dir>/sub-<s>/template_rsa/`: trial-level scores, category masks, feature-selection QC, template validation
-- `<output_dir>/group/template_rsa/`: `raw/` (the notebooks' input), subject means, summaries, comparison-set tests, figures
+- `<output_dir>/sub-<s>/template_rsa/`: saved templates, category masks, feature-selection QC, template validation (summary and every presentation pair), cv folds
+- `<output_dir>/sub-<s>/decoding/`: trial-level scores per target set
+- `<output_dir>/group/template_rsa/`: validation per subject and the presentation-level matrices averaged over subjects
+- `<output_dir>/group/decoding/`: `raw/` (the notebooks' input), subject means, summaries, comparison-set tests, figures
 - `<output_dir>/posthoc/<study>/`: the notebook's `stats_and_figures.pdf`, one CSV per table, `run_settings.json`

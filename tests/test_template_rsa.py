@@ -9,7 +9,9 @@ import pytest
 from tests.synthetic_lab import make_config, make_dataset, q
 from utils.validate_rsa_config import validate
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
+from workflows.decode_templates import decode_subject
 from workflows.generate_report import generate_report
+from workflows.group_decoding import group_decoding
 from workflows.group_template_rsa import group_template_rsa
 from workflows.template_rsa import template_rsa_subject
 
@@ -27,22 +29,25 @@ def run(tmp_path_factory):
     out = cfg["pipeline"]["output_dir"]
     for sub in SUBJECTS:
         template_rsa_subject(cfg, df, sub, out)
+        decode_subject(cfg, df, sub, out)
     group_template_rsa(cfg, out)
+    group_decoding(cfg, out)
     return root, cfg, df, out
 
 
-def group_file(out, name):
-    return pd.read_csv(f"{out}/group/template_rsa/roi-vvs_{name}", dtype={"subject": str}, low_memory=False)
+def group_file(out, name, stage="template_rsa"):
+    return pd.read_csv(f"{out}/group/{stage}/roi-vvs_{name}", dtype={"subject": str}, low_memory=False)
 
 
 def raw_file(out, target_set):
-    return pd.read_csv(f"{out}/group/template_rsa/raw/roi-vvs_target-{target_set}_scores.csv",
+    return pd.read_csv(f"{out}/group/decoding/raw/roi-vvs_target-{target_set}_scores.csv",
                        dtype={"subject": str}, low_memory=False)
 
 
 def test_category_masks_split_the_roi(run):
     _, _, _, out = run
-    qc = pd.read_csv(f"{out}/sub-1/template_rsa/sub-1_roi-vvs_feature-selection.csv").set_index("category")
+    qc = pd.read_csv(f"{out}/sub-1/template_rsa/sub-1_roi-vvs_feature-selection.csv", dtype={"fold": str})
+    qc = qc[qc["fold"] == "all"].set_index("category")
     roi = int(qc["roi_voxels"].iloc[0])
     assert (qc["mask_voxels"] < 0.8 * roi).all() and (qc["mask_voxels"] > 0.2 * roi).all()
     assert not qc["fallback_to_roi"].any()
@@ -51,12 +56,17 @@ def test_category_masks_split_the_roi(run):
 def test_validation_and_post_test_rank_target_related_others(run):
     _, _, _, out = run
     val = group_file(out, "template-validation.csv")
-    v = val[val["level"] == "exemplar"].groupby("comparison")["z"].mean()
-    assert v["target"] > v["related"] > v["others"]
-    post = group_file(out, "target-posttest_subject-means.csv")
+    # cv scores like a target (template j's weights on both vectors): target > related > others.
+    cv = val[(val["level"] == "exemplar") & (val["method"] == "cv")].groupby("comparison")["z"].mean()
+    assert cv["target"] > cv["related"] > cv["others"]
+    # kim2020 weights each pattern by its own item's exemplar-vs-others t map, which removes most of the shared
+    # category signal from the synthetic patterns: only the same-item pairs stand out.
+    kim = val[(val["level"] == "exemplar") & (val["method"] == "kim2020")].groupby("comparison")["z"].mean()
+    assert kim["target"] > kim["related"] + 0.5 and kim["target"] > kim["others"] + 0.5
+    post = group_file(out, "target-posttest_subject-means.csv", "decoding")
     p = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert p["target"] > p["related"] > p["others"]
-    tests = group_file(out, "target-posttest_comparison-tests.csv")
+    tests = group_file(out, "target-posttest_comparison-tests.csv", "decoding")
     assert (tests.loc[tests["contrast"] == "target - others", "t"] > 0).all()
 
 
@@ -91,7 +101,8 @@ def test_template_exemplars_are_selected_by_the_template_query(tmp_path):
                    "end": {"reference": "offset_end", "offset_seconds": 4.0}}})
     df = build_master_spreadsheet(cfg)
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
-    scores = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/template_rsa/sub-1_roi-vvs_target-post_test_scores.csv")
+    decode_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
+    scores = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/decoding/sub-1_roi-vvs_target-post_test_scores.csv")
     assert set(scores["stimulus"].str.rstrip("0123456789")) == {"actor", "beach"}
     assert scores.groupby(["level", "comparison"])["n_exemplars"].max().loc[("exemplar", "others")] == 3  # 3 beach exemplars only
 
@@ -103,9 +114,11 @@ def test_single_event_templates_skip_validation(tmp_path):
                                                          "end": {"reference": "offset_end", "offset_seconds": 4.0}}})
     df = build_master_spreadsheet(cfg)
     errors, warnings = validate(cfg, df)
-    assert errors == [] and any("leave-one-out" in w for w in warnings)
+    assert errors == [] and any("single run" in w for w in warnings) and any("cv needs" in w for w in warnings)
     template_rsa_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
-    post = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/template_rsa/sub-1_roi-vvs_target-post_test_scores.csv")
+    decode_subject(cfg, df, "1", cfg["pipeline"]["output_dir"])
+    assert not (tmp_path / "out" / "sub-1" / "template_rsa" / "sub-1_roi-vvs_template-validation.csv").exists()
+    post = pd.read_csv(f"{cfg['pipeline']['output_dir']}/sub-1/decoding/sub-1_roi-vvs_target-post_test_scores.csv")
     m = post[post["level"] == "exemplar"].groupby("comparison")["z"].mean()
     assert m["target"] > m["others"]
 

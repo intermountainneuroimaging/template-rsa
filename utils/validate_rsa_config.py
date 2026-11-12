@@ -34,6 +34,7 @@ from utils.rsa_common import (
     validate_model_rdms, validate_query_node,
     validate_weighted_models, ANALYSES, FEATURE_LEVELS, EXEMPLAR_CONTRASTS, TARGET_MODES, evaluate_query_node,
     roi_source_path, validate_roi, validate_window, EXTRA_SET_LEVELS, POSTHOC_GROUP_KEYS, POSTHOC_TARGET_KEYS,
+    CV_STRATEGIES, VALIDATION_METHODS,
 )
 from utils.preprocessing import check_confound_files, validate_preprocessing
 
@@ -141,14 +142,33 @@ def validate_template(cfg: dict, df, subjects: list):
     for roi in tr["rois"] or []:
         if roi not in cfg["rois"]:
             errors.append(f"template_rsa.rois: {roi!r} is not defined in `rois`")
-    if not tr["targets"]:
-        errors.append("template_rsa.targets: define at least one target set")
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    decoding = "decoding" in analyses
+    if decoding and not tr["targets"]:
+        errors.append("template_rsa.targets: define at least one target set (pipeline.analyses has \"decoding\")")
+    elif tr["targets"] and not decoding:
+        warnings.append("template_rsa.targets are defined but pipeline.analyses has no \"decoding\": targets are "
+                        "not scored (add \"decoding\" to run stage 3)")
+    val = tr["validation"]
+    bad = set(val.get("methods") or []) - VALIDATION_METHODS
+    if bad:
+        errors.append(f"template_rsa.validation.methods: unknown {sorted(bad)}; use {sorted(VALIDATION_METHODS)}")
+    cv = val.get("cross_validation") or {}
+    if "cv" in (val.get("methods") or []):
+        if cv.get("strategy") not in CV_STRATEGIES:
+            errors.append(f"template_rsa.validation.cross_validation.strategy must be one of {sorted(CV_STRATEGIES)}")
+        elif cv["strategy"] == "group_kfold" and not (isinstance(cv.get("n_splits"), int) and cv["n_splits"] >= 2):
+            errors.append("template_rsa.validation.cross_validation: group_kfold needs an integer n_splits >= 2")
+        elif cv["strategy"] == "explicit_groups" and not (isinstance(cv.get("held_out_runs"), list) and cv["held_out_runs"]
+                                                           and all(isinstance(g, list) for g in cv["held_out_runs"])):
+            errors.append("template_rsa.validation.cross_validation: explicit_groups needs held_out_runs, "
+                          "a list of lists (one list of held-out run values per fold)")
     if errors:
         return errors, warnings
 
     tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
     item_col = exemplar_column(cfg)
-    for name, spec in target_specs(cfg).items():
+    for name, spec in (target_specs(cfg).items() if decoding else []):
         path = f"template_rsa.targets.{name}"
         if spec["mode"] not in TARGET_MODES:
             errors.append(f"{path}.mode must be one of {sorted(TARGET_MODES)}")
@@ -192,10 +212,22 @@ def validate_template(cfg: dict, df, subjects: list):
             elif t_items - k_items:
                 warnings.append(f"{path}: sub-{sub} has {len(t_items - k_items)} target exemplar(s) without a template "
                                 f"(skipped), e.g. {sorted(t_items - k_items)[:3]}")
-    n_per_item = tmpl.groupby(["subject", item_col]).size()
-    if tr["validation"]["enabled"] and len(n_per_item) and n_per_item.max() < 2:
-        warnings.append("template_rsa.validation: every exemplar has one template event, so leave-one-out "
-                        "validation will be skipped (validate with a target set instead)")
+    methods = (val.get("methods") or []) if val["enabled"] else []
+    runs_per_item = tmpl.groupby(["subject", item_col])["run_id"].nunique()
+    if "kim2020" in methods and len(runs_per_item) and runs_per_item.max() < 2:
+        warnings.append("template_rsa.validation: every exemplar has template events in a single run, so kim2020 "
+                        "validation (presentation x presentation across runs) will be skipped (validate with a "
+                        "target set instead)")
+    runs_per_subject = tmpl.groupby("subject")["run_id"].nunique()
+    if "cv" in methods and len(runs_per_subject) and runs_per_subject.min() < 2:
+        warnings.append("template_rsa.validation: cv needs >= 2 template runs; skipped for subject(s) "
+                        f"{sorted(runs_per_subject[runs_per_subject < 2].index)}")
+    if decoding and errors == []:
+        for name, spec in target_specs(cfg).items():
+            overlap = set(df[evaluate_query_node(spec["events"], df)]["boldfile"]) & set(tmpl["boldfile"])
+            if overlap:
+                warnings.append(f"template_rsa.targets.{name}: {len(overlap)} target run(s) are also template runs, "
+                                "so their scores are not independent of the templates")
     return errors, warnings
 
 
@@ -217,6 +249,8 @@ def validate(cfg: dict, df, subjects=None):
         errors.append(f"subject(s) {missing_subjects} not in master spreadsheet")
     present = [s for s in subjects if s not in missing_subjects]
 
+    if "decoding" in analyses and "template" not in analyses:
+        errors.append('pipeline.analyses: "decoding" scores against the templates of the "template" analysis; add "template"')
     for analysis, check in (("rdm", validate_rdm), ("template", validate_template)):
         if analysis in analyses:
             e, w = check(cfg, df, present)
@@ -281,7 +315,7 @@ def main():
         tmpl = df[evaluate_query_node(tr["templates"]["events"], df)]
         rows = {"template events": tmpl.groupby("subject").size(),
                 "template exemplars": tmpl.groupby("subject")[exemplar_column(cfg)].nunique()}
-        for name, spec in target_specs(cfg).items():
+        for name, spec in (target_specs(cfg).items() if "decoding" in analyses else []):
             rows[f"{name} events"] = df[evaluate_query_node(spec["events"], df)].groupby("subject").size()
         print("Template RSA (per subject):\n" + pd.DataFrame(rows).fillna(0).astype(int).to_string())
     print(f"\nConfig OK ({len(warnings)} warning(s)).")

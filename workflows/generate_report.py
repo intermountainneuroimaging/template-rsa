@@ -3,17 +3,24 @@
 Stage 5: multi-page PDF report, built from the outputs of stages 2-4 (nothing is
 recomputed except MDS coordinates).
 
-Group report (default) -> <output_dir>/group/rsa_report.pdf
-  1. analysis summary (config settings) + pattern inventory (patterns per subject x RDM row)
-  2. model RDMs
-  per ROI:
-  3. mean RDM, MDS, fixed-model fits with noise ceiling and per-subject points;
-     cross-validated fits and weights when weighted_models are configured
-  4. statistics tables (per model, pairwise, cross-validated)
-  5. every subject's RDM
+The common report: design-agnostic (driven by the config and events.hierarchy). Study-specific
+statistics are in the post-hoc notebooks (_interactive_notebooks/).
+
+Group report (default) -> <output_dir>/group/rsa_report.pdf (+ workflow.png)
+  1. analysis summary (config settings)
+  2. workflow diagram: one box per enabled stage, filled from the config
+  3. data inventory: patterns per RDM row, template exemplars / presentations, run QC
+  rdm analysis, per ROI: mean RDM, MDS, model fits with noise ceiling and per-subject points,
+     cross-validated fits and weights, statistics tables, every subject's RDM
+  template analysis, per ROI: validation target / related / others per method (dots = subjects),
+     category-mask sizes, subjects flagged where target <= others, and the presentation-level
+     validation matrices averaged over subjects (kim2020: presentation x presentation; cv: per fold,
+     held-out presentation x fold template) -- every presentation shown separately
+  decoding analysis, per ROI x target set: descriptive timecourses / bars and comparison-set tests
 
 Subject report (--subject S) -> <output_dir>/sub-S/rsa/sub-S_rsa_report.pdf
-  analysis summary, the subject's pattern inventory, and per ROI its RDM, MDS and model fits.
+  the same sections for one subject: its RDM / MDS / model fits, its template validation and
+  matrices, and its decoding timecourses / bars.
 
 Usage:
     python workflows/generate_report.py --config tutorial/config-haxby-rsa.example.json
@@ -38,7 +45,9 @@ from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import build_model_rdms, hierarchy, load_config, pattern_level, rdm_level, row_names, pattern_index_path, safe_name, subject_dir  # noqa: E402
-from utils.rsa_plots import draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_weights  # noqa: E402
+from utils.rsa_plots import (  # noqa: E402
+    draw_mds, draw_models, draw_pattern_rdm, draw_rdm, draw_validation_matrix, draw_weights, draw_workflow,
+)
 
 PAGE = (8.5, 11)
 
@@ -352,67 +361,314 @@ def roi_subject_page(pdf, cfg, output_dir, roi, subject):
         plt.close(fig)
 
 
+def describe_query(node) -> str:
+    """A config query (events selection) as short readable text."""
+    if not node:
+        return "all events"
+    if "not" in node:
+        return f"NOT ({describe_query(node['not'])})"
+    for op in ("and", "or"):
+        if op in node:
+            return f" {op.upper()} ".join(describe_query(c) for c in node[op])
+    match = node.get("match", "exact")
+    value = node.get("values", node.get("value"))
+    sym = {"exact": "=", "regex": "~", "in": "in", "contains": "contains"}.get(match, match)
+    return f"{node['column']} {sym} {value}"
+
+
+def describe_window(w) -> str:
+    def end(e):
+        ref = {"onset": "onset", "offset_end": "offset"}.get(e["reference"], e["reference"])
+        s = float(e.get("offset_seconds", 0))
+        return f"{ref} {'+' if s >= 0 else '-'} {abs(s):g} s"
+    return f"{end(w['start'])}  ->  {end(w['end'])}"
+
+
+def workflow_boxes(cfg, subjects) -> dict:
+    """Text of the workflow diagram, from the config (design-agnostic)."""
+    analyses = cfg["pipeline"].get("analyses") or ["rdm"]
+    pe = cfg["pattern_estimation"]
+    roi_txt = []
+    for name, r in cfg["rois"].items():
+        roi_txt.append(f"{name} (atlas labels {r['labels']})" if r.get("labels") else f"{name} ({os.path.basename(str(r.get('mask_pattern')))})")
+    boxes = {"inputs": ("Inputs", [
+        f"events.tsv hierarchy: {' > '.join(hierarchy(cfg))}",
+        f"subjects: n = {len(subjects)}",
+        f"ROIs: {'; '.join(roi_txt)}",
+        f"BOLD: {os.path.basename(cfg['event_extraction'].get('bold_glob', ''))}"])}
+    pre = [f"GLM nuisance / censoring: {preprocessing_summary(pe)}"]
+    if "template" in analyses:
+        ts = cfg["template_rsa"]["timeseries"]
+        pre.append(f"template time series: detrend {ts['detrend']}, high-pass {ts['high_pass']} Hz, "
+                   f"low-pass {ts['low_pass']}, standardize {ts['standardize']} per run, confounds regressed out: "
+                   f"{ts['regress_confounds']}; censored volumes excluded")
+    boxes["preprocessing"] = ("Denoising and time series", pre)
+    if "rdm" in analyses:
+        rdm = cfg["rdm"]
+        boxes["rdm"] = ("RDM analysis", [
+            f"patterns: {pe['method']}, level {pattern_level(cfg)}",
+            f"RDM rows: {rdm_level(cfg)}; dissimilarity {rdm['method']}",
+            f"model RDMs: {', '.join(cfg['model_rdms']) or '-'}; comparison {cfg['comparison']['method']}",
+            f"group: {cfg['group']['test']} ({cfg['group']['alternative']}), {cfg['group']['multiple_comparisons']}"])
+    if "template" in analyses:
+        tr = cfg["template_rsa"]
+        fw, cm = tr["feature_weighting"], tr["feature_weighting"]["category_mask"]
+        from workflows.template_rsa import template_levels
+        cat, sub = template_levels(cfg)
+        boxes["template"] = ("Templates (from all template runs)", [
+            f"template events: {describe_query(tr['templates']['events'])}",
+            f"window: {describe_window(tr['templates']['window'])}",
+            f"exemplar = {hierarchy(cfg)[-1]}; category = {cat}; subcategory = {sub or '-'}",
+            ("category masks: GLM over the template runs, each category vs. the mean of the others, "
+             f"one-sided p < {cm['p_threshold']}, clusters >= {cm['cluster_extent']} voxels"
+             + (f", mini-blocks merged (gap {cm['block_merge_gap_seconds']} s)" if cm.get("block_merge_gap_seconds") else ""))
+            if cm["enabled"] else "category masks: off (whole ROI)",
+            f"weights: {', '.join(fw['levels'])}-level t maps (exemplar contrast: {fw['exemplar_contrast']})",
+            "template = mean of the exemplar's windowed patterns x its weights, inside its category mask"])
+        val = tr["validation"]
+        lines = []
+        if not val["enabled"] or not val["methods"]:
+            lines.append("off")
+        for m in val["methods"] if val["enabled"] else []:
+            if m == "kim2020":
+                lines.append("kim2020 (published): every presentation (exemplar x run) vs. every other; each pattern "
+                             "x its own exemplar's weights, inside the row exemplar's category mask; Pearson r -> "
+                             "Fisher z per pair; masks and weights from all runs")
+            elif m == "cv":
+                c = val["cross_validation"]
+                lines.append(f"cv ({c['strategy']}" + (f", {c['n_splits']} splits" if c.get("n_splits") else "")
+                             + "): masks, weights and templates refit on the training runs; each held-out "
+                             "presentation scored against every fold template as a target")
+        lines.append("summary: target (same exemplar) / related (same category) / others (other categories)")
+        boxes["validation"] = ("Template validation", lines)
+        if "decoding" in analyses:
+            from workflows.template_rsa import target_specs
+            lines = []
+            for name, spec in target_specs(cfg).items():
+                extra = f"; extra sets {', '.join(spec['extra_sets'])}" if spec["extra_sets"] else ""
+                lines.append(f"{name}: {describe_query(spec['events'])}; {spec['mode']}, window "
+                             f"{describe_window(spec['window'])}; related = same {spec['related_level']}{extra}")
+            lines.append("score vs. template j: pattern inside j's category mask x j's weights, Pearson r; "
+                         "mean r over a comparison set, then Fisher z")
+            boxes["decoding"] = ("Decoding (target events vs. templates)", lines)
+    group = []
+    if "rdm" in analyses:
+        group.append("RDM: mean RDM, model fits with noise ceiling, statistics")
+    if "template" in analyses:
+        group.append("templates: validation per subject and averaged over subjects")
+    if "decoding" in analyses:
+        group.append("decoding: group raw table (every events.tsv column) -> study-specific post-hoc notebooks")
+    boxes["group"] = ("Group level and reports", group)
+    return boxes
+
+
+def workflow_page(pdf, cfg, subjects, png_path=None):
+    fig = plt.figure(figsize=PAGE)
+    draw_workflow(fig, workflow_boxes(cfg, subjects))
+    if png_path:
+        fig.savefig(png_path, dpi=150)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def template_summary_lines(cfg) -> list:
     from workflows.template_rsa import target_specs, template_levels
     tr = cfg["template_rsa"]
     fw = tr["feature_weighting"]
     cm = fw["category_mask"]
+    val = tr["validation"]
     lines = ["", "template RSA (docs/lab_methods.md):",
              f"  exemplars:    {hierarchy(cfg)[-1]} (category {template_levels(cfg)[0]}, subcategory {template_levels(cfg)[1]})",
              f"  ROIs:         {', '.join(tr['rois'] or list(cfg['rois']))}",
-             f"  templates:    {json.dumps(tr['templates']['events'])}",
+             f"  templates:    {describe_query(tr['templates']['events'])}",
              f"  weighting:    levels {fw['levels']}, exemplar contrast {fw['exemplar_contrast']}, category mask "
-             + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off")]
-    for name, spec in target_specs(cfg).items():
-        lines.append(f"  target {name}: {spec['mode']}, group_by {spec['group']['group_by']}")
+             + (f"p<{cm['p_threshold']} k>={cm['cluster_extent']}" if cm["enabled"] else "off"),
+             f"  validation:   {', '.join(val['methods']) if val['enabled'] else 'off'}"
+             + (f" (cv: {val['cross_validation']['strategy']})" if "cv" in val["methods"] else "")]
+    if "decoding" in (cfg["pipeline"].get("analyses") or []):
+        for name, spec in target_specs(cfg).items():
+            lines.append(f"  target {name}: {spec['mode']}, group_by {spec['group']['group_by']}")
     return lines
 
 
-def template_pages(pdf, cfg, output_dir):
-    """Descriptive template-RSA pages (the post-hoc notebooks hold the study-specific statistics)."""
+def presentation_caption(items: pd.DataFrame, method: str, subject: str = None, n_subjects=None) -> str:
+    """Caption for a validation matrix: what a row / column / cell is and how many presentations each item has."""
+    if "n_presentations" in items:
+        counts = items.set_index("exemplar")["n_presentations"]
+    else:  # group items table
+        counts = items.set_index("exemplar")["max_presentations"]
+    mode = int(counts.mode().iloc[0]) if len(counts) else 0
+    odd = counts[counts != mode]
+    pres = f"{mode} presentation(s) per exemplar" + (
+        f" ({len(odd)} with fewer/more: " + ", ".join(f"{e} {int(n)}" for e, n in odd.head(6).items())
+        + (" ..." if len(odd) > 6 else "") + ")" if len(odd) else "")
+    if method == "kim2020":
+        what = ("Rows and columns: every presentation (exemplar x run; repeats within a run averaged, as in Kim et al. "
+                "2020), shown separately. Cell: Fisher z of r between the two presentations, each weighted by its own "
+                "exemplar's weights inside the ROW exemplar's category mask (so the matrix is not symmetric across "
+                "categories). The diagonal (a presentation with itself) is blank.")
+    else:
+        what = ("Rows: each presentation of the fold's held-out run(s), shown separately; columns: the templates built "
+                "from that fold's training runs. Cell: Fisher z of r, both vectors inside template j's category mask "
+                "and weighted by j's weights. Exemplars with no presentation in the held-out run(s) have no row.")
+    tail = f" Mean over {n_subjects} subjects (aligned by exemplar and presentation number)." if n_subjects else ""
+    return f"{what} {pres}.{tail} Sorted by category > subcategory > exemplar > presentation."
+
+
+def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
+    """target / related / others per method x level: mean +- SEM over presentations (subject) or subjects (group)."""
+    comps = ["target", "related", "others"]
+    rank = {"kim2020": 0, "cv": 1}
+    groups = sorted(summary[["method", "level"]].drop_duplicates().itertuples(index=False, name=None),
+                    key=lambda g: (rank.get(g[0], 9), g[1] != "exemplar", g[1]))
+    width = 0.8 / len(comps)
+    for j, comp in enumerate(comps):
+        for i, (m, lv) in enumerate(groups):
+            vals = summary[(summary["method"] == m) & (summary["level"] == lv) & (summary["comparison"] == comp)]["z"].dropna()
+            if vals.empty:
+                continue
+            x = i + (j - 1) * width
+            ax.bar(x, vals.mean(), width * 0.9, yerr=vals.sem() if len(vals) > 1 else None, capsize=2, color=f"C{j}",
+                   label=comp if i == 0 else None)
+            if by_subject:
+                ax.scatter(np.full(len(vals), x), vals, s=6, color="k", zorder=3)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xticks(range(len(groups)), [f"{m}\n{lv}" for m, lv in groups], fontsize=7)
+    ax.set_ylabel("similarity (Fisher z)", fontsize=8)
+    ax.legend(fontsize=7, frameon=False)
+
+
+def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
+    """One page per method x level: kim2020 one presentation x presentation matrix; cv one matrix per fold."""
+    for (method, level), part in cells.groupby(["method", "level"], sort=False):
+        folds = sorted(part["fold"].astype(str).unique(), key=lambda f: (f != "all", int(f) if f.isdigit() else 0))
+        n = len(folds)
+        ncols = 1 if n == 1 else 2
+        nrows = int(np.ceil(n / ncols))
+        fig = plt.figure(figsize=PAGE)
+        fig.suptitle(f"{title_prefix}ROI {roi}: template validation, {method}, {level}-weighted", fontsize=12,
+                     weight="bold", x=0.07, ha="left", y=0.97)
+        gs = fig.add_gridspec(nrows, ncols, left=0.12, right=0.88, top=0.9, bottom=0.2, hspace=0.35, wspace=0.45)
+        for k, fold in enumerate(folds):
+            ax = fig.add_subplot(gs[k // ncols, k % ncols])
+            sub = part[part["fold"].astype(str) == fold]
+            nr = sub[["row_exemplar", "row_presentation"]].drop_duplicates().shape[0]
+            nc = sub[["col_exemplar", "col_presentation"]].drop_duplicates().shape[0]
+            label = "all template runs" if fold == "all" else f"fold {fold}"
+            draw_validation_matrix(ax, sub, items, f"{label}: {nr} x {nc}", labels=n <= 4)
+            ax.set_box_aspect(1)
+        caption = presentation_caption(items, method, n_subjects=n_subjects)
+        if n_subjects is not None and "n_subjects" in part:
+            caption += f" Subjects per cell: {int(part['n_subjects'].min())}-{int(part['n_subjects'].max())}."
+        fig.text(0.07, 0.15, "\n".join(textwrap.wrap(caption, 120)), fontsize=7.5, va="top")
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def template_section(pdf, cfg, output_dir, subjects, subject=None):
+    """Template validation pages (subject or group): mask sizes, target / related / others per method and the
+    presentation-level matrices (no averaging over presentations)."""
+    for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
+        if subject:
+            base = os.path.join(subject_dir(output_dir, subject), "template_rsa", f"sub-{subject}_roi-{roi}_")
+            val = read_csv(base + "template-validation.csv", dtype={"subject": str, "fold": str})
+            cells = read_csv(base + "validation-pairs.csv", dtype={"fold": str, "row_exemplar": str, "col_exemplar": str})
+            items = read_csv(base + "items.csv", dtype={"exemplar": str})
+            fs = read_csv(base + "feature-selection.csv", dtype={"fold": str})
+            n_sub = None
+        else:
+            gdir = os.path.join(output_dir, "group", "template_rsa", f"roi-{roi}_")
+            val = read_csv(gdir + "template-validation.csv", dtype={"subject": str})
+            cells = read_csv(gdir + "validation-matrix.csv", dtype={"fold": str, "row_exemplar": str, "col_exemplar": str})
+            items = read_csv(gdir + "items.csv", dtype={"exemplar": str})
+            frames = [read_csv(os.path.join(subject_dir(output_dir, s), "template_rsa", f"sub-{s}_roi-{roi}_feature-selection.csv"),
+                               dtype={"fold": str}) for s in subjects]
+            frames = [f.assign(subject=s) for f, s in zip(frames, subjects) if f is not None]
+            fs = pd.concat(frames, ignore_index=True) if frames else None
+            n_sub = val["subject"].nunique() if val is not None else None
+        if val is None or items is None:
+            continue
+        who = f"sub-{subject}, " if subject else ""
+        fig = plt.figure(figsize=PAGE)
+        fig.suptitle(f"{who}ROI {roi}: template validation" + (f" (n={n_sub})" if n_sub else ""),
+                     fontsize=13, weight="bold", x=0.07, ha="left", y=0.97)
+        gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.1], left=0.1, right=0.95, top=0.9, bottom=0.08, hspace=0.45)
+        validation_bars(fig.add_subplot(gs[0]), val, by_subject=not subject)
+        fig.axes[-1].set_title("target / related / others (mean +- SEM over "
+                               + ("presentations" if subject else "subjects; dots = subjects") + ")", fontsize=9, loc="left")
+        ax = fig.add_subplot(gs[1])
+        ax.axis("off")
+        if fs is not None and len(fs):
+            if subject:
+                t = fs.pivot_table(index="fold", columns="category", values="mask_voxels", aggfunc="first")
+            else:
+                t = fs[fs["fold"] == "all"].groupby("category")["mask_voxels"].agg(["mean", "min", "max"]).round(0)
+            t = t.reset_index()
+            tbl = ax.table(cellText=[[fmt(v) for v in r] for r in t.itertuples(index=False)], colLabels=list(t.columns),
+                           loc="upper left", cellLoc="center")
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(7.5)
+            ax.set_title(("category-mask voxels per fold" if subject else "category-mask voxels (all template runs), over subjects")
+                         + f"; ROI {int(fs['roi_voxels'].iloc[0])} voxels", fontsize=9, loc="left")
+        pdf.savefig(fig)
+        plt.close(fig)
+        if not subject:
+            wide = val.groupby(["subject", "method", "level", "comparison"])["z"].mean().unstack("comparison")
+            if {"target", "others"} <= set(wide.columns):
+                wide["target - others"] = wide["target"] - wide["others"]
+                flagged = wide[wide["target - others"] <= 0].reset_index()
+                table_page(pdf, f"ROI {roi}: template validation per subject",
+                           [("Subjects where target <= others (check these)", flagged),
+                            ("Every subject", wide.reset_index())], max_rows=60)
+        if cells is not None and len(cells):
+            matrix_pages(pdf, roi, cells, items, who, n_subjects=n_sub)
+
+
+def decoding_section(pdf, cfg, output_dir, subject=None):
+    """Descriptive decoding pages per ROI x target set (the post-hoc notebooks hold the study statistics)."""
     from utils.rsa_plots import draw_template_bars, draw_template_timecourse
+    from workflows.group_decoding import describe
     from workflows.template_rsa import target_specs
 
-    gdir = os.path.join(output_dir, "group", "template_rsa")
+    gdir = os.path.join(output_dir, "group", "decoding")
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
-        val = read_csv(os.path.join(gdir, f"roi-{roi}_template-validation.csv"), dtype={"subject": str})
         tables = []
-        if val is not None and len(val):
-            tables.append(("Template validation (leave-one-event-out), mean z over subjects",
-                           val.groupby(["level", "comparison"])["z"].agg(["mean", "sem", "count"]).reset_index()))
         for name, spec in target_specs(cfg).items():
             g = spec["group"]
-            prefix = os.path.join(gdir, f"roi-{roi}_target-{safe_name(name)}")
-            if spec["mode"] == "timecourse":
-                summary = read_csv(prefix + "_summary.csv")
+            timecourse = spec["mode"] == "timecourse"
+            if subject:
+                scores = read_csv(os.path.join(subject_dir(output_dir, subject), "decoding",
+                                               f"sub-{subject}_roi-{roi}_target-{name}_scores.csv"),
+                                  dtype={"subject": str}, low_memory=False)
+                if scores is None or scores.empty:
+                    continue
+                subj, summary, tests = describe(scores, g, timecourse)
+            else:
+                prefix = os.path.join(gdir, f"roi-{roi}_target-{safe_name(name)}")
+                summary, subj = read_csv(prefix + "_summary.csv"), read_csv(prefix + "_subject-means.csv", dtype={"subject": str})
+                tests = read_csv(prefix + "_comparison-tests.csv")
                 if summary is None:
                     continue
-                levels = list(dict.fromkeys(summary["level"]))
-                comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
+            who = f"sub-{subject}, " if subject else ""
+            levels = list(dict.fromkeys(summary["level"]))
+            comps = [c for c in g["comparisons"] if c in set(summary["comparison"])]
+            if timecourse:
                 fig, axes = plt.subplots(len(comps), len(levels), figsize=PAGE, squeeze=False)
                 for j, level in enumerate(levels):
                     for i, comp in enumerate(comps):
                         draw_template_timecourse(axes[i, j], summary[summary["level"] == level], comp, f"{level} | {comp}")
-                fig.suptitle(f"ROI {roi}: {name} (timecourse)", fontsize=12, weight="bold")
-                fig.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
             else:
-                subj = read_csv(prefix + "_subject-means.csv", dtype={"subject": str})
-                if subj is None:
-                    continue
-                levels = list(dict.fromkeys(subj["level"]))
                 fig, axes = plt.subplots(len(levels), 1, figsize=PAGE, squeeze=False)
                 for ax, level in zip(axes.flat, levels):
-                    draw_template_bars(ax, subj[subj["level"] == level],
-                                       [c for c in g["comparisons"] if c in set(subj["comparison"])], f"{level}-weighted templates")
-                fig.suptitle(f"ROI {roi}: {name}", fontsize=12, weight="bold")
-                fig.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-            tables.append((f"{name}: comparison sets (paired t, FDR)", read_csv(prefix + "_comparison-tests.csv")))
+                    draw_template_bars(ax, subj[subj["level"] == level], comps, f"{level}-weighted templates")
+            fig.suptitle(f"{who}ROI {roi}: decoding, {name} ({spec['mode']})", fontsize=12, weight="bold")
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+            if not subject:
+                tables.append((f"{name}: comparison sets (paired t, FDR)", tests))
         if tables:
-            table_page(pdf, f"ROI {roi}: template RSA (descriptive; study statistics live in the post-hoc notebooks)", tables)
+            table_page(pdf, f"ROI {roi}: decoding (descriptive; study statistics live in the post-hoc notebooks)", tables)
 
 
 def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
@@ -429,8 +685,11 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
     lines = summary_lines(cfg, subjects) + (template_summary_lines(cfg) if "template" in analyses else [])
     with PdfPages(out) as pdf:
         text_page(pdf, "RSA report" + (f": sub-{subject}" if subject else ""), lines)
+        workflow_page(pdf, cfg, subjects, os.path.join(os.path.dirname(out), "workflow.png"))
         inv = inventory(output_dir, subjects, row_names(cfg), rdm_level(cfg)) if "rdm" in analyses else None
         table_page(pdf, "Data inventory", [(f"Patterns per {rdm_level(cfg)}", inv),
+                                           ("Template exemplars and presentations", template_inventory(cfg, output_dir, subjects)
+                                            if "template" in analyses else None),
                                            ("Run QC: confounds and censoring", run_qc(output_dir, subjects))],
                    max_rows=60)
         if "rdm" in analyses:
@@ -440,10 +699,25 @@ def generate_report(cfg, output_dir, subjects=None, subject=None) -> str:
                     roi_subject_page(pdf, cfg, output_dir, roi, subject)
                 else:
                     roi_group_pages(pdf, cfg, output_dir, roi, subjects)
-        if "template" in analyses and not subject:
-            template_pages(pdf, cfg, output_dir)
+        if "template" in analyses:
+            template_section(pdf, cfg, output_dir, subjects, subject)
+        if "decoding" in analyses:
+            decoding_section(pdf, cfg, output_dir, subject)
     print(f"Wrote {out}")
     return out
+
+
+def template_inventory(cfg, output_dir, subjects):
+    rows = []
+    for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
+        for s in subjects:
+            it = read_csv(os.path.join(subject_dir(output_dir, s), "template_rsa", f"sub-{s}_roi-{roi}_items.csv"))
+            if it is not None:
+                rows.append({"subject": s, "roi": roi, "exemplars": len(it),
+                             "presentations": int(it["n_presentations"].sum()),
+                             "min per exemplar": int(it["n_presentations"].min()),
+                             "max per exemplar": int(it["n_presentations"].max())})
+    return pd.DataFrame(rows) if rows else None
 
 
 def main():

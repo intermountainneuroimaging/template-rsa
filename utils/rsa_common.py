@@ -37,7 +37,9 @@ BIDS_ENTITY_RE = re.compile(r"(?:^|_)(?P<key>[a-zA-Z]+)-(?P<val>[^_.]+)")
 
 MATCH_TYPES = {"exact", "in", "regex"}
 BOOL_KEYS = {"and", "or", "not"}
-ANALYSES = {"rdm", "template"}
+ANALYSES = {"rdm", "template", "decoding"}
+VALIDATION_METHODS = {"kim2020", "cv"}
+CV_STRATEGIES = {"per_run", "group_kfold", "explicit_groups"}
 FEATURE_LEVELS = {"exemplar", "category", "none"}
 EXEMPLAR_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
 TARGET_MODES = {"timecourse", "window_mean"}
@@ -179,13 +181,21 @@ def default_config() -> dict:
                 "exemplar_contrast": "all_others",
                 "weight_target_patterns": True,
             },
-            "validation": {"enabled": True},
+            "validation": {
+                "enabled": True,
+                "methods": ["kim2020"],   # "kim2020" (published, Kim et al. 2020 code) and/or "cv"
+                "cross_validation": {     # for "cv": folds over the template runs (mvpa-decoding kfold_cv)
+                    "strategy": "per_run",      # per_run | group_kfold | explicit_groups
+                    "n_splits": None,           # group_kfold
+                    "held_out_runs": None,      # explicit_groups: one list of run values per fold
+                },
+            },
             "targets": {},
         },
         "pipeline": {
             "output_dir": "out",
             "subjects": None,
-            "analyses": ["rdm"],
+            "analyses": ["rdm"],      # any of "rdm", "template", "decoding" (decoding needs template)
         },
     }
 

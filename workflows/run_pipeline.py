@@ -8,12 +8,15 @@ run the same stages as separate jobs).
   2  patterns     estimate_patterns.py   (per subject)
   3  rsa          rsa_workflow.py        (per subject)
   4  group        group_rsa.py
-  3t template     template_rsa.py        (per subject; template RSA, Kim et al. 2020 style)
+  3t template     template_rsa.py        (per subject; templates + validation, Kim et al. 2020)
   4t template_group group_template_rsa.py
+  3d decode       decode_templates.py    (per subject; target events scored against the templates)
+  4d decode_group group_decoding.py
   5  report       generate_report.py     (group PDF)
 
-pipeline.analyses picks the analysis families: "rdm" (stages patterns / rsa / group) and/or
-"template" (template / template_group). Stages of an analysis not listed are skipped.
+pipeline.analyses picks the analysis families: "rdm" (stages patterns / rsa / group), "template"
+(template / template_group) and "decoding" (decode / decode_group; needs "template"). Stages of an
+analysis not listed are skipped.
 
 Subjects come from --subject, else pipeline.subjects, else every subject in the
 master spreadsheet.
@@ -32,15 +35,18 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.rsa_common import load_config, read_master_spreadsheet, resolve_rows
 from utils.validate_rsa_config import validate
+from workflows.decode_templates import decode_subject
 from workflows.estimate_patterns import estimate_subject
 from workflows.generate_master_spreadsheet import build_master_spreadsheet
 from workflows.generate_report import generate_report
+from workflows.group_decoding import group_decoding
 from workflows.group_rsa import group_rsa
 from workflows.group_template_rsa import group_template_rsa
 from workflows.rsa_workflow import rsa_subject
 from workflows.template_rsa import template_rsa_subject
 
-STAGES = ("spreadsheet", "validate", "patterns", "rsa", "group", "template", "template_group", "report")
+STAGES = ("spreadsheet", "validate", "patterns", "rsa", "group", "template", "template_group", "decode", "decode_group",
+          "report")
 
 
 def main():
@@ -54,7 +60,8 @@ def main():
     output_dir = cfg["pipeline"]["output_dir"]
     analyses = cfg["pipeline"].get("analyses") or ["rdm"]
     stages = [s for s in args.stages if not (s in ("patterns", "rsa", "group") and "rdm" not in analyses)
-              and not (s in ("template", "template_group") and "template" not in analyses)]
+              and not (s in ("template", "template_group") and "template" not in analyses)
+              and not (s in ("decode", "decode_group") and "decoding" not in analyses)]
     sheet = cfg["event_extraction"]["output_file"]
 
     if "spreadsheet" in stages:
@@ -87,6 +94,9 @@ def main():
         if "template" in stages:
             print(f"== Stage 3t: template RSA, sub-{subject}")
             template_rsa_subject(cfg, df, subject, output_dir)
+        if "decode" in stages:
+            print(f"== Stage 3d: decoding, sub-{subject}")
+            decode_subject(cfg, df, subject, output_dir)
 
     if "group" in stages:
         print("== Stage 4: group")
@@ -95,6 +105,10 @@ def main():
     if "template_group" in stages:
         print("== Stage 4t: template RSA group")
         group_template_rsa(cfg, output_dir, subjects)
+
+    if "decode_group" in stages:
+        print("== Stage 4d: decoding group")
+        group_decoding(cfg, output_dir, subjects)
 
     if "report" in stages:
         print("== Stage 5: report")

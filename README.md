@@ -25,8 +25,10 @@ rsaworkflow/
 │   ├── estimate_patterns.py             # stage 2: one pattern image per exemplar / condition x run, or per item (LSA / LSS)
 │   ├── rsa_workflow.py                  # stage 3: subject RDMs per ROI / searchlight + model comparison
 │   ├── group_rsa.py                     # stage 4: mean RDM, MDS, noise ceiling, group inference, weighted models
-│   ├── template_rsa.py                  # stage 3t: feature-weighted exemplar-template RSA (lab method; docs/lab_methods.md)
-│   ├── group_template_rsa.py            # stage 4t: template-RSA timecourses, contrasts, mixed models
+│   ├── template_rsa.py                  # stage 3t: exemplar templates + validation (lab method; docs/lab_methods.md)
+│   ├── group_template_rsa.py            # stage 4t: template validation across subjects
+│   ├── decode_templates.py              # stage 3d: target events scored against the templates
+│   ├── group_decoding.py                # stage 4d: group raw table, descriptive summaries, comparison-set check
 │   ├── generate_report.py               # stage 5: multi-page PDF report (group, or one subject)
 │   └── run_pipeline.py                  # all stages locally, from one config
 ├── slurm/                         # same stages as chained SLURM jobs (0_submit_rsa_pipeline.sh)
@@ -73,6 +75,10 @@ python utils/validate_rsa_config.py --config CONFIG
 python workflows/estimate_patterns.py --config CONFIG --subject 1
 python workflows/rsa_workflow.py --config CONFIG --subject 1
 python workflows/group_rsa.py --config CONFIG
+python workflows/template_rsa.py --config CONFIG --subject 1        # template analysis: templates + validation
+python workflows/decode_templates.py --config CONFIG --subject 1    # decoding: targets vs. the saved templates
+python workflows/group_template_rsa.py --config CONFIG
+python workflows/group_decoding.py --config CONFIG
 python workflows/generate_report.py --config CONFIG                 # group PDF
 python workflows/generate_report.py --config CONFIG --subject 1     # single-subject PDF
 ```
@@ -182,8 +188,8 @@ Top-level sections (defaults live in `utils/rsa_common.py::default_config`):
 | `comparison` | `method`: any `rsatoolbox.rdm.compare` method (`corr`, `spearman`, `tau-a`, `rho-a`, `cosine`, `corr_cov`, `cosine_cov`, …) |
 | `group` | `test` (`ttest`, `wilcoxon` or `bootstrap`), `alternative`, `noise_ceiling`, `multiple_comparisons` (a statsmodels method or `none`), `n_bootstrap`, `random_state`. `crossval`: `scheme` (`leave_one_subject_out` or `k_fold`), `k`, `include_fixed` (used by `weighted_models`; needs ≥3 subjects). |
 | `rois` (atlas form) | `{name: {"atlas_pattern", "labels": [int, ...]}}`, the union of labels from a label image (e.g. fMRIPrep `aparcaseg`), resampled to the BOLD grid |
-| `template_rsa` | `rois`, `category_level`, `subcategory_level` (hierarchy levels; exemplars are the finest level; default category: the coarsest level). `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query; select a subset of exemplars through the event naming, e.g. a `trial_type` regex `new_.*`), `window`. `feature_weighting`: `levels` (`exemplar`, `category`, `none`), `exemplar_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation.enabled`. `targets.<set>`: `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_sets` (`{name: {"column", "level": exemplar / category / subcategory}}`), and `group` (`group_by`, `comparisons`; descriptive only). Study-specific post-hoc settings, such as contrasts, reference conditions and previous-trial columns, are rejected here with a pointer to the notebooks. Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
-| `pipeline` | `output_dir`, `subjects`, `analyses` (`rdm` and/or `template`) |
+| `template_rsa` | `rois`, `category_level`, `subcategory_level` (hierarchy levels; exemplars are the finest level; default category: the coarsest level). `timeseries`: `detrend`, `standardize`, `high_pass`, `low_pass`, `regress_confounds`. `templates`: `events` (query; select a subset of exemplars through the event naming, e.g. a `trial_type` regex `new_.*`), `window`. `feature_weighting`: `levels` (`exemplar`, `category`, `none`), `exemplar_contrast` (`all_others`, `within_category`, `within_subcategory`), `weight_target_patterns`, and `category_mask` (`enabled`, `events`, `p_threshold`, `cluster_extent`, `min_voxels`, `block_merge_gap_seconds`). `validation`: `enabled`, `methods` (`kim2020`: the published presentation x presentation validation; `cv`: feature selection and templates refit per fold, not in the papers), `cross_validation` (`strategy` `per_run` / `group_kfold` with `n_splits` / `explicit_groups` with `held_out_runs`, as mvpa-decoding's `kfold_cv`). `targets.<set>` (scored by the `decoding` analysis): `events`, `mode` (`timecourse` or `window_mean`), `window`, `related_level`, `extra_sets` (`{name: {"column", "level": exemplar / category / subcategory}}`), and `group` (`group_by`, `comparisons`; descriptive only). Study-specific post-hoc settings, such as contrasts, reference conditions and previous-trial columns, are rejected here with a pointer to the notebooks. Windows use mvpa-decoding's syntax: `{"start"/"end": {"reference": "onset"/"offset_end", "offset_seconds"}}`. |
+| `pipeline` | `output_dir`, `subjects`, `analyses` (any of `rdm`, `template`, `decoding`; `decoding` needs `template`) |
 
 Queries use the same grammar as mvpa-decoding:
 
@@ -222,13 +228,14 @@ See [tutorial/README.md](tutorial/README.md). It uses Haxby et al. (2001): 6 sub
 
 ## Template RSA (the lab's method)
 
-`pipeline.analyses: ["template"]` runs the Lewis-Peacock / Banich lab's feature-weighted template matching (Kim et al., 2020; Bretton et al., 2024) instead of, or alongside, `"rdm"`. Each step is set in the `template_rsa` config section:
+`pipeline.analyses: ["template", "decoding"]` runs the Lewis-Peacock / Banich lab's feature-weighted template matching (Kim et al., 2020; Bretton et al., 2024) instead of, or alongside, `"rdm"`. The three analyses are separate stages: **rdm**, **template** (templates + validation) and **decoding** (target events scored against the saved templates). Each step is set in the `template_rsa` config section:
 
-1. Exemplar templates come from a template phase, such as a localizer or a pre-test.
-2. Voxels are restricted to category-selective masks (GLM t-contrast, p < .05, cluster ≥ 10).
-3. Patterns are weighted by exemplar-vs-others (LSA) or category t-maps.
-4. Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other exemplars' templates. `extra_sets` adds the templates named in any other event column, such as the replacement category on replace trials.
-5. The group stage stacks every subject's scores into one **group raw table** per ROI and target set, at `group/template_rsa/raw/`. It also writes descriptive subject means and summaries, and a check that the target scores above the related and other exemplars.
+1. **Template stage.** Exemplar templates come from a template phase, such as a localizer or a pre-test. Voxels are restricted to category-selective masks (GLM t-contrast, p < .05, cluster ≥ 10) and weighted by exemplar-vs-others (LSA) or category t-maps. The templates are built from all template runs and saved for the decoding stage.
+2. **Template validation** (`validation.methods`): `kim2020` is the published validation from the released code (every presentation correlated with every other, each weighted by its own exemplar's t-map); `cv` refits the masks, weights and templates on training runs and scores the held-out run (not in the papers).
+3. **Decoding stage.** Target-phase patterns, either per TR as timecourses or as window means, are scored by Fisher-z Pearson correlation with the target, related and other exemplars' templates. `extra_sets` adds the templates named in any other event column, such as the replacement category on replace trials. Targets should come from runs other than the template runs (a held-out test); the validator warns otherwise.
+4. The decoding group stage stacks every subject's scores into one **group raw table** per ROI and target set, at `group/decoding/raw/`. It also writes descriptive subject means and summaries, and a check that the target scores above the related and other exemplars.
+
+The common report (`generate_report.py`, group or `--subject`) has a workflow diagram drawn from the config, the template validation with every presentation shown separately (kim2020: presentation x presentation; cv: one held-out presentation x fold template matrix per fold), and the descriptive decoding pages.
 
 The core stops there; it is the same for any design. **Study-specific statistics live in notebooks** in [_interactive_notebooks/](_interactive_notebooks/README.md), as in mvpa-decoding. They start from the raw table, which carries every events.tsv column. Examples:
 

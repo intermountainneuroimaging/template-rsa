@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Template RSA (feature-weighted exemplar-template pattern similarity) for one subject:
-the Lewis-Peacock / Banich lab method of Kim et al. (2020, Nat Commun 11:6239) and
-Bretton et al. (2024, J Cogn Neurosci 36:2117). See docs/lab_methods.md for the formal
-description; every step below is set in the config's `template_rsa` section.
+Stage 2 (template): feature-weighted exemplar templates and their validation for one subject --
+the Lewis-Peacock / Banich lab method of Kim et al. (2020, Nat Commun 11:6239) and Bretton et al.
+(2024, J Cogn Neurosci 36:2117). See docs/lab_methods.md for the formal description and for which
+step comes from the papers / released code and which was added here. Scoring target events against
+the templates is stage 3 (workflows/decode_templates.py).
 
 Per ROI in template_rsa.rois:
   1. Time series. Each run is masked to the ROI, cleaned (detrend, filter, optional confound
@@ -25,36 +26,33 @@ Per ROI in template_rsa.rois:
      and confound regressors; shared exemplar / category regressors) -- as SPM does -- so
      exemplars that occur in only one run (Bretton et al.) are handled.
   4. Templates. For each exemplar: the z-scored volumes in templates.window (lag-shifted) of
-     each of its template events, averaged over volumes and events, times its weights.
-  5. Targets (template_rsa.targets, any number of named sets). For each target event and
-     each comparison set, Pearson r between template(s) and the target pattern weighted by
-     the same exemplar's weights (weight_target_patterns), averaged over the set's exemplars,
-     then Fisher z:
-       target   the event's own exemplar (the finest events.hierarchy level)
-       related  the other exemplars of its category (or subcategory: related_level)
-       others   the exemplars of the other categories
-       <name>   extra_sets: the templates whose exemplar / category / subcategory is named in
-                another events column, e.g. every template of the replacement category on
-                replace trials
+     each of its template events, averaged over volumes and events, times its weights, inside its
+     category mask. Built from ALL template runs and saved for the decoding stage.
+  5. Validation (template_rsa.validation.methods):
+       "kim2020"  the published localizer validation (Kim et al. 2020 code, rsa_decode_02_item.m):
+                  every presentation (item x run) correlated with every other one, each pattern
+                  weighted by its own item's weights inside the row item's category mask; pairs
+                  Fisher-z'd and averaged into target / related / others. Feature selection uses
+                  all runs, as published.
+       "cv"       not in the papers (from mvpa-decoding's kfold_cv): per fold
+                  (validation.cross_validation: per_run / group_kfold / explicit_groups), masks,
+                  weights and templates are refit on the training runs and each held-out
+                  presentation is scored against every fold template as a target would be.
 
 Levels come from events.hierarchy: exemplar = its finest level; category =
 template_rsa.category_level (default: the coarsest level, when there are several);
 subcategory = template_rsa.subcategory_level (optional).
-     mode "timecourse": one score per volume from the window start (unshifted), e.g. 30 TRs
-     from trial onset; mode "window_mean": volumes in the window averaged first, one score
-     per event (e.g. encoding fidelity, or post-test fidelity).
-  6. Validation (templates with >=2 events per exemplar): leave-one-event-out template matching
-     within the template phase (target / related / others).
-
-Every events.tsv column is carried into the score tables, so study-specific analyses (memory
-outcomes, trial N+1 effects, condition contrasts, mixed models) run on them afterwards, in the
-post-hoc notebooks (_interactive_notebooks/).
 
 Outputs (under <output_dir>/sub-<subject>/template_rsa/):
-  sub-<s>_roi-<roi>_target-<set>_scores.csv     one row per event x [volume] x level x comparison
-  sub-<s>_roi-<roi>_template-validation.csv
-  sub-<s>_roi-<roi>_feature-selection.csv       voxels per category mask, weights summary
-  sub-<s>_roi-<roi>_category-<c>_mask.nii.gz
+  sub-<s>_roi-<roi>_level-<level>_templates.npz   templates, masks, weights (read by stage 3)
+  sub-<s>_roi-<roi>_roi-mask.nii.gz               the ROI voxels the templates are defined on
+  sub-<s>_roi-<roi>_items.csv                     exemplars, category, subcategory, presentations
+  sub-<s>_roi-<roi>_feature-selection.csv         voxels per category mask (fold "all" and CV folds)
+  sub-<s>_roi-<roi>_category-<c>_mask.nii.gz      (and _fold-<k>_category-<c>_mask.nii.gz for cv)
+  sub-<s>_roi-<roi>_template-validation.csv       target / related / others per presentation x method
+  sub-<s>_roi-<roi>_validation-pairs.csv          every presentation x presentation (kim2020) or
+                                                  held-out presentation x fold template (cv) score
+  sub-<s>_template-folds.json                     cv fold membership
 
 Usage:
     python workflows/template_rsa.py --config CONFIG --subject 01
@@ -62,6 +60,7 @@ Usage:
 
 import argparse
 import copy
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -80,8 +79,6 @@ from utils.rsa_common import (
     TEMPLATE_TARGET_DEFAULTS, evaluate_query_node, hierarchy, load_config, merge_with_defaults,
     read_master_spreadsheet, resolve_roi_mask, safe_name, subject_dir, window_volumes,
 )
-
-EVENT_META_COLUMNS = ("boldfile", "eventfile", "n_frames")
 
 
 @dataclass
@@ -328,122 +325,246 @@ def build_template_sets(cfg, tmpl_events, runs, items, category_masks, category_
     return sets, occurrences
 
 
-def extra_sets(ts: TemplateSet, ev, spec: dict) -> dict:
-    """extra_sets {name: {"column", "level"}}: the templates whose exemplar / category / subcategory equals
-    this event's value in `column` -- e.g. on replace trials, every template of the replacement
-    category ({"column": "replace_category", "level": "category"}). Events with no value (or no
-    matching template) get no score for that set."""
-    sets = {}
-    for name, xs in spec.items():
-        value = ev.get(xs["column"])
-        if value is None or pd.isna(value):
-            continue
-        level = xs["level"]
-        members = ts.items[ts.items[level].astype(str) == str(value)]["exemplar"].tolist()
-        if members:
-            sets[name] = members
-    return sets
+# =====================================================
+# 6. validation
+# =====================================================
+
+VALIDATION_COLUMNS = ["method", "level", "fold", "row_exemplar", "row_presentation", "col_exemplar",
+                      "col_presentation", "r", "z"]
 
 
-def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
+def presentation_units(occurrences: dict, tmpl_events: pd.DataFrame) -> list:
+    """Kim et al. (2020) code (rsa_decode_02_item.m): one localizer pattern per item per run (the mean of
+    that run's presentations of the item). -> [{exemplar, run_id, event_index, presentation, pattern}],
+    presentation = 1.. in run order within the exemplar."""
+    units = []
+    for item, occ in occurrences.items():
+        by_run = {}
+        for idx, pat in occ:
+            by_run.setdefault(tmpl_events.loc[idx, "run_id"], []).append((idx, pat))
+        for k, run_id in enumerate(sorted(by_run), start=1):
+            pats = by_run[run_id]
+            units.append({"exemplar": item, "run_id": run_id, "event_index": tmpl_events.loc[pats[0][0], "event_index"],
+                          "presentation": k, "pattern": np.mean([p for _, p in pats], axis=0)})
+    return units
+
+
+def row_correlations(Q: np.ndarray, rows: np.ndarray) -> np.ndarray:
+    """Pearson r of each row in `rows` with every row of Q (patterns x voxels) -> len(rows) x n."""
+    if not np.isnan(Q).any():
+        Qc = Q - Q.mean(axis=1, keepdims=True)
+        norm_ = np.sqrt((Qc ** 2).sum(axis=1))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            Qn = Qc / norm_[:, None]
+        return Qn[rows] @ Qn.T
+    out = np.full((len(rows), Q.shape[0]), np.nan)
+    for a, i in enumerate(rows):
+        for j in range(Q.shape[0]):
+            ok = np.isfinite(Q[i]) & np.isfinite(Q[j])
+            if ok.sum() >= 3:
+                out[a, j] = pearson(Q[i, ok], Q[j, ok])
+    return out
+
+
+def comparison_of(cat: dict, row_item: str, col_item: str) -> str:
+    return "target" if row_item == col_item else "related" if cat[row_item] == cat[col_item] else "others"
+
+
+def validate_kim2020(ts: TemplateSet, level: str, units: list):
+    """The published localizer validation (Kim et al. 2020, rsa_decode_02_item.m, "targ vs. non-targ"):
+    every presentation unit (item x run) correlated with every other one. Each pattern is weighted by
+    ITS OWN item's weights; both are cut to the row item's category mask; the identical pair is dropped.
+    Each pair is Fisher-z'd; a unit's target / related / others score is the mean z of its pairs.
+    Feature selection (masks, weights) uses all template runs, as published.
+    -> (pairs DataFrame, summary rows)."""
+    units = [u for u in units if u["exemplar"] in ts.templates]
+    if not units:
+        return pd.DataFrame(columns=VALIDATION_COLUMNS), []
+    ex = [u["exemplar"] for u in units]
+    PW = np.array([u["pattern"] * ts.weights[e] for u, e in zip(units, ex)])
+    pairs, summary = [], []
+    cat = ts.items.set_index("exemplar")["category"].to_dict()
+    by_mask = {}
+    for i, e in enumerate(ex):
+        by_mask.setdefault(cat[e], []).append(i)
+    for rows in by_mask.values():
+        m = ts.masks[ex[rows[0]]]
+        R = row_correlations(PW[:, m], np.array(rows))
+        for a, i in enumerate(rows):
+            sets = {"target": [], "related": [], "others": []}
+            for j in range(len(units)):
+                if j == i:
+                    continue
+                z = fisher_z(R[a, j])
+                comp = comparison_of(cat, ex[i], ex[j])
+                sets[comp].append(z)
+                pairs.append(("kim2020", level, "all", ex[i], units[i]["presentation"], ex[j], units[j]["presentation"],
+                              R[a, j], z))
+            for comp, zs in sets.items():
+                if zs and not np.isnan(zs).all():
+                    summary.append({"method": "kim2020", "level": level, "fold": "all", "exemplar": ex[i],
+                                    "run_id": units[i]["run_id"], "event_index": units[i]["event_index"],
+                                    "presentation": units[i]["presentation"], "comparison": comp,
+                                    "n_pairs": int(np.isfinite(zs).sum()), "z": float(np.nanmean(zs))})
+    return pd.DataFrame(pairs, columns=VALIDATION_COLUMNS), summary
+
+
+def resolve_folds(cv_cfg: dict, tmpl_events: pd.DataFrame) -> list:
+    """Folds over the template runs, as mvpa-decoding's model.kfold_cv: per_run (leave-one-run-out),
+    group_kfold (n_splits contiguous groups of runs), explicit_groups (held_out_runs: one list of run
+    values per fold, matched against the events' `run` column as strings).
+    -> [(fold_id, training boldfiles, held-out boldfiles)]."""
+    runs = tmpl_events.drop_duplicates("boldfile").sort_values(["session", "task", "run"] if "session" in tmpl_events
+                                                                else ["task", "run"])
+    bolds, run_values = runs["boldfile"].tolist(), runs["run"].astype(str).tolist()
+    strategy = cv_cfg.get("strategy", "per_run")
+    if strategy == "per_run":
+        groups = [[b] for b in bolds]
+    elif strategy == "group_kfold":
+        groups = [list(g) for g in np.array_split(np.array(bolds, dtype=object), int(cv_cfg["n_splits"]))]
+    elif strategy == "explicit_groups":
+        groups = [[b for b, r in zip(bolds, run_values) if r in {str(x) for x in held}]
+                  for held in cv_cfg["held_out_runs"]]
+    else:
+        return []
+    return [(str(k), [b for b in bolds if b not in g], g) for k, g in enumerate(groups, start=1) if g]
+
+
+def validate_cv(cfg, sub_df, runs, masker, items, tmpl_events, folds):
+    """Cross-validated validation (not in the papers; adopted from mvpa-decoding's kfold_cv): per fold,
+    category masks, exemplar weights and templates are all fit on the training runs only, and every
+    template event of the held-out run(s) is scored against every fold template exactly as a target
+    is (TemplateSet.score: both vectors cut to template j's mask and weighted by j's weights; mean r
+    over a set, then Fisher z). -> (pairs DataFrame, summary rows, feature-selection qc rows, fold masks)."""
     tr_cfg = cfg["template_rsa"]
     ex_col = exemplar_column(cfg)
-    events = select(sub_df, spec["events"]).copy()
-    events[ex_col] = events[ex_col].astype(str)
-    meta_cols = [c for c in events.columns if c not in EVENT_META_COLUMNS]
-
-    rows, skipped = [], 0
-    for level, ts in template_sets.items():
-        known = set(ts.templates)
-        all_items = list(ts.templates)
-        col_of = {it: j for j, it in enumerate(all_items)}
-        for bold, run_events in events.groupby("boldfile"):
-            rd = runs[bold]
-            S = score_matrix(ts, rd.clean, all_items) if spec["mode"] == "timecourse" else None
-            for _, ev in run_events.iterrows():
-                item = ev[ex_col]
-                if item not in known:
-                    skipped += 1
-                    continue
-                sets = comparison_sets(ts, item, spec["related_level"])
-                sets.update(extra_sets(ts, ev, spec["extra_sets"]))
-                meta = {c: ev[c] for c in meta_cols}
-                if spec["mode"] == "timecourse":
-                    vols = window_volumes(spec["window"], float(ev["onset"]), float(ev["duration"]),
-                                          rd.tr, rd.n_frames)
-                    for k, vol in enumerate(vols):
-                        for comp, members in sets.items():
-                            r = np.nanmean(S[vol, [col_of[m] for m in members]]) if members else np.nan
-                            rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
-                                         "tr_offset": k, "time_s": k * rd.tr, "volume": int(vol),
-                                         "n_exemplars": len(members), "r": r, "z": fisher_z(r)})
-                else:
-                    y = event_pattern(rd, spec["window"], ev)
-                    if y is None:
-                        continue
-                    for comp, members in sets.items():
-                        r = np.nanmean([ts.score(y, m) for m in members]) if members else np.nan
-                        rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
-                                     "n_exemplars": len(members), "r": r, "z": fisher_z(r)})
-    if skipped:
-        print(f"    (!) {name}: {skipped} event-level(s) whose exemplar has no template were skipped")
-    return pd.DataFrame(rows)
-
-
-def validate_templates(cfg, template_sets, occurrences, tmpl_events) -> pd.DataFrame:
-    """Leave-one-event-out: each template event's pattern vs its exemplar's template rebuilt
-    without that event (and the full templates of the other exemplars)."""
-    rows = []
-    for level, ts in template_sets.items():
-        for item, occ in occurrences.items():
-            if item not in ts.templates or len(occ) < 2:
+    window = tr_cfg["templates"]["window"]
+    pairs, summary, qc_all, fold_masks = [], [], [], {}
+    for fold, train, test in folds:
+        tmpl_tr = tmpl_events[tmpl_events["boldfile"].isin(train)]
+        items_tr = items[items["exemplar"].isin(set(tmpl_tr[ex_col].astype(str)))].reset_index(drop=True)
+        if items_tr.empty:
+            continue
+        sub_tr = sub_df[~sub_df["boldfile"].isin(test)]  # everything except the held-out run(s)
+        cm, ct, et, qc = feature_selection(cfg, sub_tr, {b: r for b, r in runs.items() if b not in test}, masker, items_tr)
+        fold_masks[fold] = cm
+        qc_all += [{**q, "fold": fold} for q in qc]
+        sets, _ = build_template_sets(cfg, tmpl_tr, runs, items_tr, cm, ct, et)
+        test_events = tmpl_events[tmpl_events["boldfile"].isin(test)]
+        seen = {}
+        for idx, ev in test_events.sort_values(["boldfile", "onset"]).iterrows():
+            item = str(ev[ex_col])
+            pat = event_pattern(runs[ev["boldfile"]], window, ev)
+            if pat is None:
                 continue
-            m, w = ts.masks[item], ts.weights[item]
-            for k, (idx, pat) in enumerate(occ):
-                loo = np.mean([p for j, (_, p) in enumerate(occ) if j != k], axis=0)[m] * w[m]
-                sets = comparison_sets(ts, item, "category")
-                for comp, members in sets.items():
-                    rs = [ts.score(pat, item, template=loo)] if comp == "target" else [ts.score(pat, mm) for mm in members]
-                    r = np.nanmean(rs) if rs else np.nan
-                    rows.append({"level": level, "exemplar": item, "event_index": tmpl_events.loc[idx, "event_index"],
-                                 "run_id": tmpl_events.loc[idx, "run_id"], "comparison": comp, "r": r, "z": fisher_z(r)})
-    return pd.DataFrame(rows)
+            seen[item] = seen.get(item, 0) + 1
+            for level, ts in sets.items():
+                if item not in ts.templates:
+                    continue
+                rs = {j: ts.score(pat, j) for j in ts.templates}
+                pairs += [("cv", level, fold, item, seen[item], j, 0, r, fisher_z(r)) for j, r in rs.items()]
+                for comp, members in comparison_sets(ts, item, "category").items():
+                    r = np.nanmean([rs[m] for m in members]) if members else np.nan
+                    if np.isfinite(r):
+                        summary.append({"method": "cv", "level": level, "fold": fold, "exemplar": item,
+                                        "run_id": ev["run_id"], "event_index": ev["event_index"],
+                                        "presentation": seen[item], "comparison": comp,
+                                        "n_pairs": len(members), "z": float(fisher_z(r))})
+    return pd.DataFrame(pairs, columns=VALIDATION_COLUMNS), summary, qc_all, fold_masks
+
+
+# =====================================================
+# templates on disk (read by decode_templates.py)
+# =====================================================
+
+def templates_path(out_dir, subject, roi, level):
+    return os.path.join(out_dir, f"sub-{subject}_roi-{roi}_level-{level}_templates.npz")
+
+
+def roi_mask_path(out_dir, subject, roi):
+    return os.path.join(out_dir, f"sub-{subject}_roi-{roi}_roi-mask.nii.gz")
+
+
+def save_template_set(path, ts: TemplateSet, template_runs):
+    items = list(ts.templates)
+    n_vox = len(next(iter(ts.masks.values())))
+    full = np.full((len(items), n_vox), np.nan)
+    for k, it in enumerate(items):
+        full[k, ts.masks[it]] = ts.templates[it]
+    info = ts.items.set_index("exemplar").loc[items]
+    np.savez_compressed(path, exemplar=np.array(items, dtype=str), category=np.array(info["category"].astype(str), dtype=str),
+                        subcategory=np.array(info["subcategory"].astype(str), dtype=str),
+                        masks=np.array([ts.masks[i] for i in items]),
+                        weights=np.array([ts.weights[i] for i in items], dtype=np.float64), templates=full,
+                        weight_target=np.array(ts.weight_target), template_runs=np.array(sorted(template_runs), dtype=str))
+
+
+def load_template_set(path) -> tuple:
+    """-> (TemplateSet, template boldfiles)."""
+    d = np.load(path, allow_pickle=False)
+    items = [str(x) for x in d["exemplar"]]
+    table = pd.DataFrame({"exemplar": items, "category": d["category"].astype(str),
+                          "subcategory": pd.Series(d["subcategory"].astype(str)).replace("nan", np.nan)})
+    masks = {it: d["masks"][k] for k, it in enumerate(items)}
+    weights = {it: d["weights"][k] for k, it in enumerate(items)}
+    templates = {it: d["templates"][k][masks[it]] for k, it in enumerate(items)}
+    return TemplateSet(table, masks, weights, templates, bool(d["weight_target"])), [str(b) for b in d["template_runs"]]
 
 
 # =====================================================
 # driver
 # =====================================================
 
-def template_rsa_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str) -> dict:
-    tr_cfg = cfg["template_rsa"]
+def template_items(cfg: dict, tmpl_events: pd.DataFrame) -> pd.DataFrame:
     ex_col = exemplar_column(cfg)
     cat_col, sub_col = template_levels(cfg)
+    items = pd.DataFrame({"exemplar": tmpl_events[ex_col].astype(str),
+                          "category": tmpl_events[cat_col].astype(str) if cat_col else tmpl_events[ex_col].astype(str),
+                          "subcategory": tmpl_events[sub_col].astype(str) if sub_col else np.nan})
+    return items.drop_duplicates("exemplar").reset_index(drop=True)
+
+
+def print_validation(summary: pd.DataFrame):
+    peek = summary.groupby(["method", "level", "comparison"])["z"].mean().unstack()
+    print("    template validation (mean z):\n" + "\n".join("      " + line for line in peek.round(3).to_string().splitlines()))
+
+
+def template_rsa_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: str) -> dict:
+    """Stage 2 (template): category masks, exemplar weights and templates from all template runs (saved for
+    the decoding stage), plus the validation methods in template_rsa.validation.methods."""
+    tr_cfg = cfg["template_rsa"]
+    val_cfg = tr_cfg["validation"]
     sub_df = df[df["subject"] == subject].copy()
     tmpl_events = select(sub_df, tr_cfg["templates"]["events"])
     if tmpl_events.empty:
         raise SystemExit(f"sub-{subject}: no template events (template_rsa.templates.events)")
-
-    items = pd.DataFrame({"exemplar": tmpl_events[ex_col].astype(str),
-                          "category": tmpl_events[cat_col].astype(str) if cat_col else tmpl_events[ex_col].astype(str),
-                          "subcategory": tmpl_events[sub_col].astype(str) if sub_col else np.nan})
-    items = items.drop_duplicates("exemplar").reset_index(drop=True)
-    specs = target_specs(cfg)
+    items = template_items(cfg, tmpl_events)
     needed = set(tmpl_events["boldfile"])
-    for spec in specs.values():
-        needed |= set(select(sub_df, spec["events"])["boldfile"])
     cm_events = tr_cfg["feature_weighting"]["category_mask"].get("events")
     if cm_events:
         needed |= set(select(sub_df, cm_events)["boldfile"])
+    sub_df = sub_df[sub_df["boldfile"].isin(needed)]
 
     out_dir = os.path.join(subject_dir(output_dir, subject), "template_rsa")
     os.makedirs(out_dir, exist_ok=True)
-    roi_names = tr_cfg["rois"] or list(cfg["rois"])
+    methods = list(val_cfg["methods"]) if val_cfg["enabled"] else []
+    folds = resolve_folds(val_cfg["cross_validation"], tmpl_events) if "cv" in methods else []
+    if "cv" in methods:
+        if len(folds) < 2:
+            print("    (i) cv validation skipped: fewer than 2 template runs to fold over")
+            methods.remove("cv")
+        else:
+            with open(os.path.join(out_dir, f"sub-{subject}_template-folds.json"), "w") as fh:
+                json.dump({k: {"training": [os.path.basename(b) for b in tr],
+                               "testing": [os.path.basename(b) for b in te]} for k, tr, te in folds}, fh, indent=2)
+
     written = {}
-    for roi in roi_names:
-        print(f"  ROI {roi}: {len(items)} exemplars, {len(needed)} run(s)")
+    for roi in tr_cfg["rois"] or list(cfg["rois"]):
+        print(f"  ROI {roi}: {len(items)} exemplars, {len(needed)} template run(s)")
         roi_img = resolve_roi_mask(cfg["rois"][roi], subject, sorted(needed)[0])
         masker = NiftiMasker(mask_img=roi_img).fit()
-        runs = {bold: load_run(cfg, run_df, masker) for bold, run_df in sub_df[sub_df["boldfile"].isin(needed)].groupby("boldfile")}
+        masker.mask_img_.to_filename(roi_mask_path(out_dir, subject, roi))
+        runs = {bold: load_run(cfg, run_df, masker) for bold, run_df in sub_df.groupby("boldfile")}
 
         category_masks, category_t, exemplar_t, qc = feature_selection(cfg, sub_df, runs, masker, items)
         for c, m in category_masks.items():
@@ -451,31 +572,44 @@ def template_rsa_subject(cfg: dict, df: pd.DataFrame, subject: str, output_dir: 
                 os.path.join(out_dir, f"sub-{subject}_roi-{roi}_category-{safe_name(c)}_mask.nii.gz"))
         if qc:
             print("    category masks: " + ", ".join(f"{q['category']} {q['mask_voxels']}/{q['roi_voxels']} vox" for q in qc))
-        pd.DataFrame(qc).to_csv(os.path.join(out_dir, f"sub-{subject}_roi-{roi}_feature-selection.csv"), index=False)
+        qc = [{**q, "fold": "all"} for q in qc]
 
         template_sets, occurrences = build_template_sets(cfg, tmpl_events, runs, items, category_masks, category_t, exemplar_t)
-        if tr_cfg["validation"]["enabled"]:
-            val = validate_templates(cfg, template_sets, occurrences, tmpl_events)
-            if len(val):
-                val.insert(0, "subject", subject)
-                val.insert(1, "roi", roi)
-                val.to_csv(os.path.join(out_dir, f"sub-{subject}_roi-{roi}_template-validation.csv"), index=False)
-                summary = val.groupby(["level", "comparison"])["z"].mean().unstack()
-                print("    template validation (leave-one-event-out, mean z):\n" +
-                      "\n".join("      " + line for line in summary.round(3).to_string().splitlines()))
-            else:
-                print("    (i) template validation skipped: no exemplar has >=2 template events")
+        for level, ts in template_sets.items():
+            save_template_set(templates_path(out_dir, subject, roi, level), ts, needed)
+        n_pres = {it: len({tmpl_events.loc[i, "run_id"] for i, _ in occ}) for it, occ in occurrences.items()}
+        items.assign(n_presentations=items["exemplar"].map(n_pres).fillna(0).astype(int)).to_csv(
+            os.path.join(out_dir, f"sub-{subject}_roi-{roi}_items.csv"), index=False)
 
-        for name, spec in specs.items():
-            scores = score_targets(name, spec, cfg, sub_df, runs, template_sets)
-            scores.insert(0, "roi", roi)
-            path = os.path.join(out_dir, f"sub-{subject}_roi-{roi}_target-{name}_scores.csv")
-            scores.to_csv(path, index=False)
-            written[(roi, name)] = path
-            if len(scores):
-                peek = scores.groupby(["level", "comparison"])["z"].mean().unstack()
-                print(f"    target set {name!r} ({spec['mode']}): {scores.drop_duplicates(['event_index', 'run_id']).shape[0]} events, mean z:\n" +
-                      "\n".join("      " + line for line in peek.round(3).to_string().splitlines()))
+        pair_frames, summary = [], []
+        if "kim2020" in methods:
+            units = presentation_units(occurrences, tmpl_events)
+            if max(n_pres.values(), default=0) < 2:
+                print("    (i) kim2020 validation skipped: no exemplar has template events in >= 2 runs")
+            else:
+                for level, ts in template_sets.items():
+                    p, s = validate_kim2020(ts, level, units)
+                    pair_frames.append(p)
+                    summary += s
+        if "cv" in methods:
+            p, s, fold_qc, fold_masks = validate_cv(cfg, sub_df, runs, masker, items, tmpl_events, folds)
+            pair_frames.append(p)
+            summary += s
+            qc += fold_qc
+            for fold, cm in fold_masks.items():
+                for c, m in cm.items():
+                    masker.inverse_transform(m.astype(np.float32)).to_filename(
+                        os.path.join(out_dir, f"sub-{subject}_roi-{roi}_fold-{fold}_category-{safe_name(c)}_mask.nii.gz"))
+        pd.DataFrame(qc).to_csv(os.path.join(out_dir, f"sub-{subject}_roi-{roi}_feature-selection.csv"), index=False)
+        if summary:
+            val = pd.DataFrame(summary)
+            val.insert(0, "subject", subject)
+            val.insert(1, "roi", roi)
+            val.to_csv(os.path.join(out_dir, f"sub-{subject}_roi-{roi}_template-validation.csv"), index=False)
+            pd.concat(pair_frames, ignore_index=True).to_csv(
+                os.path.join(out_dir, f"sub-{subject}_roi-{roi}_validation-pairs.csv"), index=False)
+            print_validation(val)
+        written[roi] = out_dir
     return written
 
 

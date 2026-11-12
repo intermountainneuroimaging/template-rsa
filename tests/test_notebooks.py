@@ -10,7 +10,9 @@ nbformat = pytest.importorskip("nbformat")
 nbclient = pytest.importorskip("nbclient")
 
 from tests.synthetic_lab import make_config, make_dataset, write_config  # noqa: E402
+from workflows.decode_templates import decode_subject  # noqa: E402
 from workflows.generate_master_spreadsheet import build_master_spreadsheet  # noqa: E402
+from workflows.group_decoding import group_decoding  # noqa: E402
 from workflows.group_template_rsa import group_template_rsa  # noqa: E402
 from workflows.template_rsa import template_rsa_subject  # noqa: E402
 
@@ -28,7 +30,9 @@ def core_run(tmp_path_factory):
     df.to_csv(cfg["event_extraction"]["output_file"], index=False)
     for sub in ("1", "2", "3", "4"):
         template_rsa_subject(cfg, df, sub, cfg["pipeline"]["output_dir"])
+        decode_subject(cfg, df, sub, cfg["pipeline"]["output_dir"])
     group_template_rsa(cfg, cfg["pipeline"]["output_dir"])
+    group_decoding(cfg, cfg["pipeline"]["output_dir"])
     return root, write_config(root, user)
 
 

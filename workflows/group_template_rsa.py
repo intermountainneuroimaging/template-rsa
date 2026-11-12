@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """
-Group stage for template RSA (see template_rsa.py and docs/lab_methods.md), per ROI and target
-set. Design-agnostic: it assembles the group table and describes it; study-specific inference
-(baseline / reference-condition timecourses, window-bin tests, memory contrasts, trial N+1
-analyses, mixed models) is done in the post-hoc notebooks in _interactive_notebooks/, which start
-from the raw table written here.
+Group stage for the template stage (template_rsa.py): template validation across subjects, per ROI.
+Decoding results have their own group stage (group_decoding.py).
 
-  raw table      every subject's scores stacked: one row per subject x event [x volume] x weighting
-                 level x comparison set, with every events.tsv column (the notebooks' input)
-  subject means  target events averaged within subject per level x comparison x group_by [x TR]
-  summary        mean / SEM / n over subjects of the subject means
-  sanity check   paired t-tests between the comparison sets (target vs related vs others, ...) per
-                 level x group_by [averaged over TRs], FDR across pairs: is exemplar information there?
-  validation     leave-one-event-out template validation, per subject
+  validation     per subject x validation method x weighting level x comparison set: the mean z over the
+                 subject's presentations (and, for cv, folds)
+  matrix         the presentation-level validation matrix averaged over subjects, aligned by exemplar and
+                 presentation number (kim2020: presentation x presentation; cv: per fold, held-out
+                 presentation x fold template), with the number of subjects per cell
+  items          exemplars with their category / subcategory, number of subjects and presentations
 
 Outputs (under <output_dir>/group/template_rsa/):
-  raw/roi-<roi>_target-<set>_scores.csv
-  roi-<roi>_target-<set>_{subject-means,summary,comparison-tests}.csv and _{timecourse,bars}.png
   roi-<roi>_template-validation.csv
+  roi-<roi>_validation-matrix.csv
+  roi-<roi>_items.csv
 
 Usage:
     python workflows/group_template_rsa.py --config CONFIG
@@ -25,100 +21,71 @@ Usage:
 
 import argparse
 import glob
-import itertools
 import os
 import sys
 
 import pandas as pd
-from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.rsa_common import load_config, safe_name
-from utils.rsa_plots import plot_template_bars, plot_template_timecourse
-from workflows.group_rsa import correct
-from workflows.template_rsa import target_specs
+from utils.rsa_common import load_config
 
-KEY = ["roi", "level", "comparison"]
+MATRIX_KEY = ["method", "level", "fold", "row_exemplar", "row_presentation", "col_exemplar", "col_presentation"]
 
 
-def load_scores(output_dir, roi, name, subjects=None):
-    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "template_rsa", f"sub-*_roi-{roi}_target-{name}_scores.csv")))
-    frames = [pd.read_csv(p, dtype={"subject": str, "run": str, "run_id": str}, low_memory=False) for p in paths]
-    frames = [f for f in frames if len(f)]
-    if not frames:
+def subject_files(output_dir, roi, suffix, subjects=None):
+    paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "template_rsa", f"sub-*_roi-{roi}_{suffix}")))
+    if subjects:
+        paths = [p for p in paths if os.path.basename(p).split("_")[0][4:] in set(subjects)]
+    return paths
+
+
+def validation_summary(val: pd.DataFrame) -> pd.DataFrame:
+    """Per subject x method x level x comparison: mean z over presentations (and folds)."""
+    return val.groupby(["subject", "roi", "method", "level", "comparison"], as_index=False).agg(
+        z=("z", "mean"), n_presentations=("z", "size"))
+
+
+def group_matrix(paths: list) -> pd.DataFrame:
+    """Mean z of every validation-matrix cell over subjects (subjects aligned by exemplar and presentation
+    number; a cell a subject lacks simply has fewer subjects), accumulated one subject at a time."""
+    total = None
+    for p in paths:
+        d = pd.read_csv(p, dtype={"fold": str, "row_exemplar": str, "col_exemplar": str})
+        d = d.groupby(MATRIX_KEY, dropna=False)["z"].agg(["sum", "count"])
+        total = d if total is None else total.add(d, fill_value=0)
+    if total is None:
         return None
-    df = pd.concat(frames, ignore_index=True)
-    return df[df["subject"].isin(subjects)].reset_index(drop=True) if subjects else df
-
-
-def group_label(df: pd.DataFrame, group_by: list) -> pd.Series:
-    if not group_by:
-        return pd.Series("all", index=df.index)
-    return df[group_by].apply(lambda row: " | ".join("NA" if pd.isna(v) else str(v) for v in row), axis=1)
-
-
-def describe(scores: pd.DataFrame, g: dict, timecourse: bool):
-    """-> (subject means, summary over subjects, comparison-set tests)."""
-    scores = scores[scores["comparison"].isin(g["comparisons"])].copy()
-    scores["group"] = group_label(scores, list(g["group_by"] or []))
-    by = [*KEY, "group"] + (["tr_offset"] if timecourse else [])
-    subj = scores.groupby(["subject", *by], as_index=False).agg(
-        z=("z", "mean"), n_events=("z", "size"), **({"time_s": ("time_s", "first")} if timecourse else {}))
-    summary = subj.groupby(by, as_index=False).agg(
-        mean=("z", "mean"), sem=("z", stats.sem), n=("z", "count"), **({"time_s": ("time_s", "first")} if timecourse else {}))
-
-    flat = subj.groupby(["subject", *KEY, "group"], as_index=False)["z"].mean()
-    rows = []
-    for (roi, level, grp), part in flat.groupby(["roi", "level", "group"]):
-        wide = part.pivot(index="subject", columns="comparison", values="z")
-        pairs = []
-        for a, b in itertools.combinations([c for c in g["comparisons"] if c in wide], 2):
-            both = wide[[a, b]].dropna()
-            t, p = stats.ttest_rel(both[a], both[b]) if len(both) > 1 else (float("nan"), float("nan"))
-            pairs.append({"roi": roi, "level": level, "group": grp, "contrast": f"{a} - {b}", "n": len(both),
-                          "mean_diff": (both[a] - both[b]).mean(), "t": t, "p": p})
-        for r, q in zip(pairs, correct([r["p"] for r in pairs], "fdr_bh")):
-            r["p_fdr"] = q
-        rows += pairs
-    return subj, summary, pd.DataFrame(rows)
+    out = total.reset_index()
+    out["z"] = out["sum"] / out["count"]
+    return out.rename(columns={"count": "n_subjects"}).drop(columns="sum")
 
 
 def group_template_rsa(cfg: dict, output_dir: str, subjects=None):
     out_dir = os.path.join(output_dir, "group", "template_rsa")
-    raw_dir = os.path.join(out_dir, "raw")
-    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    subjects = [str(s) for s in subjects] if subjects else None
     for roi in cfg["template_rsa"]["rois"] or list(cfg["rois"]):
-        val_paths = sorted(glob.glob(os.path.join(output_dir, "sub-*", "template_rsa", f"sub-*_roi-{roi}_template-validation.csv")))
-        if val_paths:
-            val = pd.concat([pd.read_csv(p, dtype={"subject": str}) for p in val_paths], ignore_index=True)
-            if subjects:
-                val = val[val["subject"].isin(subjects)]
-            vs = val.groupby(["subject", "roi", "level", "comparison"], as_index=False)["z"].mean()
-            vs.to_csv(os.path.join(out_dir, f"roi-{roi}_template-validation.csv"), index=False)
-            print(f"ROI {roi}: template validation (mean z over subjects)\n" +
-                  vs.groupby(["level", "comparison"])["z"].mean().unstack().round(3).to_string())
+        val_paths = subject_files(output_dir, roi, "template-validation.csv", subjects)
+        if not val_paths:
+            print(f"ROI {roi}: no template validation found; skipped")
+            continue
+        val = pd.concat([pd.read_csv(p, dtype={"subject": str, "fold": str}) for p in val_paths], ignore_index=True)
+        vs = validation_summary(val)
+        vs.to_csv(os.path.join(out_dir, f"roi-{roi}_template-validation.csv"), index=False)
+        print(f"ROI {roi}: template validation (mean z over {vs['subject'].nunique()} subjects)\n" +
+              vs.groupby(["method", "level", "comparison"])["z"].mean().unstack().round(3).to_string())
 
-        for name, spec in target_specs(cfg).items():
-            g = spec["group"]
-            scores = load_scores(output_dir, roi, name, subjects)
-            if scores is None:
-                print(f"  (!) no scores for ROI {roi}, target set {name}; skipped")
-                continue
-            tag = f"roi-{roi}_target-{safe_name(name)}"
-            scores.to_csv(os.path.join(raw_dir, f"{tag}_scores.csv"), index=False)
-            timecourse = spec["mode"] == "timecourse"
-            subj, summary, tests = describe(scores, g, timecourse)
-            prefix = os.path.join(out_dir, tag)
-            subj.to_csv(prefix + "_subject-means.csv", index=False)
-            summary.to_csv(prefix + "_summary.csv", index=False)
-            tests.to_csv(prefix + "_comparison-tests.csv", index=False)
-            n_sub = scores["subject"].nunique()
-            if timecourse:
-                plot_template_timecourse(summary, g, f"{roi}: {name} (n={n_sub})", prefix + "_timecourse.png")
-            else:
-                plot_template_bars(subj, g, f"{roi}: {name} (n={n_sub})", prefix + "_bars.png")
-            print(f"ROI {roi}, target set {name!r} ({spec['mode']}, n={n_sub}): raw table -> {raw_dir}/{tag}_scores.csv")
-            print(subj.groupby(["level", "group", "comparison"])["z"].mean().unstack().round(3).to_string())
+        matrix = group_matrix(subject_files(output_dir, roi, "validation-pairs.csv", subjects))
+        if matrix is not None:
+            matrix.to_csv(os.path.join(out_dir, f"roi-{roi}_validation-matrix.csv"), index=False)
+
+        item_paths = subject_files(output_dir, roi, "items.csv", subjects)
+        if item_paths:
+            items = pd.concat([pd.read_csv(p, dtype={"exemplar": str}) for p in item_paths], ignore_index=True)
+            items = items.groupby(["exemplar", "category", "subcategory"], as_index=False, dropna=False).agg(
+                n_subjects=("exemplar", "size"), min_presentations=("n_presentations", "min"),
+                max_presentations=("n_presentations", "max"))
+            items.to_csv(os.path.join(out_dir, f"roi-{roi}_items.csv"), index=False)
 
 
 def main():

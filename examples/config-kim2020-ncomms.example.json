@@ -99,7 +99,10 @@
       "weight_target_patterns": true
     },
     "validation": {
-      "enabled": true
+      "enabled": true,
+      "methods": [
+        "kim2020"
+      ]
     },
     "targets": {
       "study_timecourse": {
@@ -191,7 +194,8 @@
     "output_dir": "out/kim2020",
     "subjects": null,
     "analyses": [
-      "template"
+      "template",
+      "decoding"
     ]
   }
 }

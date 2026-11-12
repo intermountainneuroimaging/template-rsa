@@ -419,7 +419,7 @@ Weighted models have free weights, so they are only ever scored on **held-out su
 
 @@ rsaworkflow/workflows/template_rsa.py | load_run
 
-Every run in the template phase, the target phases and the category-mask events is loaded once per ROI, into a **z-scored TR series with NaN rows at censored volumes** (patterns and scoring) and a **mean-scaled, censored copy** (the feature-selection GLMs) — both from Part A.
+Every run in the template phase and the category-mask events (template stage), or in the target phases (decoding stage), is loaded once per ROI, into a **z-scored TR series with NaN rows at censored volumes** (patterns and scoring) and a **mean-scaled, censored copy** (the feature-selection GLMs) — both from Part A.
 
 ## D2. Category masks
 
@@ -441,9 +441,11 @@ Least-squares-all over the template runs: one shared regressor per template exem
 
 @@ rsaworkflow/workflows/template_rsa.py | build_template_sets | [["occurrences = {}", "templates[item] = np.mean("]]
 
-A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones.
+A template is the exemplar's z-scored pattern — averaged over the volumes of `templates.window` (lag-shifted) and over the exemplar's template events — **restricted to its category's mask and multiplied voxel-wise by its weights**. The three `levels` differ only in `w`: the exemplar's t map, its category's t map, or ones. The templates are built from all template runs and saved, with their masks and weights, for the decoding stage:
 
-## D5. Scoring a target pattern
+@@ rsaworkflow/workflows/template_rsa.py | save_template_set
+
+## D5. Scoring a target pattern (decoding stage, `decode_templates.py`)
 
 @@ rsaworkflow/workflows/template_rsa.py | TemplateSet.score
 
@@ -454,24 +456,30 @@ A template is the exemplar's z-scored pattern — averaged over the volumes of `
 
 @@ rsaworkflow/workflows/template_rsa.py | comparison_sets
 
-@@ rsaworkflow/workflows/template_rsa.py | extra_sets
+@@ rsaworkflow/workflows/decode_templates.py | extra_sets
 
-@@ rsaworkflow/workflows/template_rsa.py | score_targets | [["for comp, members in sets.items():", "\"n_exemplars\": len(members), \"r\": r, \"z\": fisher_z(r)})"]]
+@@ rsaworkflow/workflows/decode_templates.py | score_targets | [["for comp, members in sets.items():", "\"n_exemplars\": len(members), \"r\": r, \"z\": fisher_z(r)})"]]
 
 - A set's score is the **mean Pearson r over its exemplars, then Fisher z** (the authors' order of operations), for `target` (the trial's own exemplar), `related` (other exemplars of its category), `others` (exemplars of other categories) and any `extra_sets` — e.g. every template of the category named in `replace_category`.
 - Every events.tsv column is carried into each row (`meta`), which is what lets the post-hoc notebooks define memory outcomes, previous trials or operations later without touching the core.
 
 ## D6. Template validation
 
-@@ rsaworkflow/workflows/template_rsa.py | validate_templates | [["for k, (idx, pat) in enumerate(occ):", "r = np.nanmean(rs) if rs else np.nan"]]
+@@ rsaworkflow/workflows/template_rsa.py | validate_kim2020 | [["PW = np.array(", "pairs.append((\"kim2020\""]]
 
-Each template event is scored against its exemplar's template rebuilt **without that event**. ▲ Note: the masks and weights (D2–D3) were still estimated from all template events, including the left-out one — the same mild circularity as the published analysis; a fully held-out check would re-fit the GLMs per fold.
+`kim2020` is the published validation (Kim et al. 2020, `rsa_decode_02_item.m`): every presentation (item × run) against every other, each pattern weighted by **its own** item's weights and both cut to the row item's category mask, Fisher z per pair. ▲ Note: as published, the masks and weights (D2–D3) come from all template runs, including the presentation being validated.
 
-## D7. The group raw table
+@@ rsaworkflow/workflows/template_rsa.py | resolve_folds
 
-@@ rsaworkflow/workflows/group_template_rsa.py | group_template_rsa | [["scores = load_scores(output_dir, roi, name, subjects)", "scores.to_csv(os.path.join(raw_dir"]]
+@@ rsaworkflow/workflows/template_rsa.py | validate_cv | [["for fold, train, test in folds:", "rs = {j: ts.score(pat, j) for j in ts.templates}"]]
 
-@@ rsaworkflow/workflows/group_template_rsa.py | describe | [["scores = scores[scores[\"comparison\"].isin", "mean=(\"z\", \"mean\"), sem=(\"z\", stats.sem)"]]
+`cv` (not in the papers; mvpa-decoding's `kfold_cv`) re-fits D2–D4 on the training runs of each fold and scores each held-out presentation against every fold template exactly as a target is scored (D5) — the fully held-out check.
+
+## D7. The group raw table (decoding group stage)
+
+@@ rsaworkflow/workflows/group_decoding.py | group_decoding | [["scores = load_scores(output_dir, roi, name, subjects)", "scores.to_csv(os.path.join(raw_dir"]]
+
+@@ rsaworkflow/workflows/group_decoding.py | describe | [["scores = scores[scores[\"comparison\"].isin", "mean=(\"z\", \"mean\"), sem=(\"z\", stats.sem)"]]
 
 The core stops here: every subject stacked, plus descriptive subject means. All study-specific inference starts from the raw table.
 
