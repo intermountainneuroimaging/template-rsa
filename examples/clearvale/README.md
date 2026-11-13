@@ -9,6 +9,7 @@ examples/clearvale/
 ├── configs/
 │   ├── config-cv-kim2020-denoised.json   # main analysis: motion confounds + censoring (first 10 vol, FD > 0.9 mm)
 │   ├── config-cv-kim2020-raw.json        # identical, without confounds / censoring
+│   ├── config-cv-kim2020-spm12-aligned.json  # the choices of the lab's SPM12 pipeline (see pipeline_alignment.md)
 │   └── config-cv-traditional-rdm.json    # sanity check: classic RDM of the localizer (no masks / weights)
 ├── scripts/
 │   ├── fetch_bold.py                # Flywheel -> only the BOLD runs, motion files and aparc+aseg a subject needs
@@ -23,8 +24,10 @@ examples/clearvale/
 │   ├── 01_download_from_flywheel.ipynb     # one subject's stim files + preprocessed outputs
 │   ├── 02_methods_figures.ipynb            # methods figures for the report (sub-090)
 │   ├── 03_download_all_stim.ipynb          # every session's PsychoPy files
-│   └── 04_run_lengths_from_flywheel.ipynb  # volumes per run from the DICOM metadata -> sourcedata/run_lengths.csv
-└── analysis_deviations.md           # data deviations and how they are handled (for the report)
+│   ├── 04_run_lengths_from_flywheel.ipynb  # volumes per run from the DICOM metadata -> sourcedata/run_lengths.csv
+│   └── 05_wm_operations_posthoc.ipynb      # WM statistics on the group raw tables (removal, valence, fidelity, N+1)
+├── analysis_deviations.md           # data deviations and how they are handled (for the report)
+└── pipeline_alignment.md            # differences from the lab's SPM12 Clearvale pipeline, and how to match it
 ```
 
 ## Where the data lives
@@ -92,6 +95,25 @@ The pipeline runs the template stage (templates + `kim2020` and `cv` validation)
 (WM timecourse and encoding fidelity against each image's own template), the group stages, and the
 common report (`out/kim2020_denoised/group/rsa_report.pdf`; per subject with
 `workflows/generate_report.py --subject 090`).
+
+5. **Post-hoc statistics:** `notebooks/05_wm_operations_posthoc.ipynb` reads only the group raw tables,
+   `group/fidelity/raw/roi-vvs_target-{wmtimecourse,encodingfidelity}_scores.csv`, so it runs on a laptop
+   from the HPC's `group/` folder (unzip it into `data/cv-bids/out/hpc_kim2020/group/`). Settings in its
+   configuration cell (or the environment variables in brackets):
+   - `RESULTS_DIR` (`RSA_RESULTS_DIR`): the folder that holds `group/`; `None` uses the config's
+     `pipeline.output_dir`.
+   - `SUBJECTS` (`RSA_SUBJECTS`): the inclusion list, as a list, a comma-separated string or a text file
+     with one subject per line (`#` comments allowed). `None` keeps every subject in the tables.
+   - `CONFIG_PATH` (`RSA_CONFIG`), the ROI, the target-set names, and the timing in seconds.
+
+   It writes `stats_and_figures.pdf`, one CSV per table and `run_settings.json` (with the subjects
+   included) to `<RESULTS_DIR>/posthoc/clearvale/roi-vvs_level-item/`. Sections:
+   - timecourses by operation
+   - removal (operation minus maintain) in 3-TR bins with onsets
+   - operation × valence
+   - switch-target tracking, once the config scores `switch_category` / `switch_item` extra sets
+   - encoding fidelity
+   - trial N+1 proactive interference
 
 ## Open decisions
 

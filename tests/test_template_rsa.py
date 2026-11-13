@@ -220,3 +220,60 @@ def test_hierarchy_that_does_not_nest_is_rejected(run):
     bad.loc[bad.index[0], "category"] = "scene" if bad.loc[bad.index[0], "category"] == "face" else "face"
     errors, _ = validate(cfg, bad)
     assert any("nest" in e for e in errors)
+
+
+def test_presentation_order_matches_item_instance_numbering(run):
+    from workflows.generate_report import presentation_order
+    _, cfg, df, out = run
+    items = pd.read_csv(f"{out}/sub-1/templates/sub-1_roi-vvs_items.csv", dtype={"item": str})
+    order = presentation_order(cfg, ["1"], items)
+    loc = df[(df["subject"] == "1") & (df["task"] == "localizer")].sort_values(["run_id", "onset"])
+    assert len(order) == len(loc) == 3 * len(items)
+    assert (order["run"] == order["item_instance"]).all()  # one showing per run: instance k = run k
+    first = loc.groupby("run_id").head(1)["stimulus"].tolist()
+    assert order[order["position"] == 0].sort_values("run")["item"].tolist() == first
+    group = presentation_order(cfg, list(SUBJECTS), items)  # orders differ between synthetic subjects
+    assert group["n_subjects"].eq(len(SUBJECTS)).all() and 0 < group["agreement"].mean() < 1
+
+
+def test_matrix_item_order_is_temporal_by_default_and_alphabetical_on_request(run):
+    import copy
+    from utils.validate_rsa_config import validate
+    from workflows.generate_report import matrix_item_order
+    _, cfg, df, out = run
+    items = pd.read_csv(f"{out}/sub-1/templates/sub-1_roi-vvs_items.csv", dtype={"item": str})
+    order, note = matrix_item_order(cfg, items, ["1"])
+    run1 = df[(df["subject"] == "1") & (df["task"] == "localizer")].sort_values(["run_id", "onset"])
+    run1 = run1[run1["run_id"] == run1["run_id"].min()]
+    expected = (run1.assign(category=run1["category"], subcategory=run1["subcategory"])
+                .sort_values(["category", "subcategory", "onset"])["stimulus"].tolist())
+    assert order == expected and "first shown" in note
+    alpha = copy.deepcopy(cfg)
+    alpha["template_rsa"]["validation"]["matrix_order"] = "alphabetical"
+    assert matrix_item_order(alpha, items, ["1"])[0] is None
+    bad = copy.deepcopy(cfg)
+    bad["template_rsa"]["validation"]["matrix_order"] = "random"
+    assert any("matrix_order" in e for e in validate(bad, df)[0])
+
+
+def test_window_aggregate_volumes_averages_single_volume_correlations(run):
+    import copy
+    from workflows.template_fidelity import score_targets
+    from workflows.template_rsa import load_run, target_specs
+    from workflows.template_fidelity import load_templates
+    from nilearn.maskers import NiftiMasker
+    _, cfg, df, out = run
+    spec = copy.deepcopy(target_specs(cfg)["encoding_fidelity"])
+    sub_df = df[df["subject"] == "1"]
+    sets, _ = load_templates(f"{out}/sub-1/templates", "1", "vvs", ["item"])
+    masker = NiftiMasker(mask_img=f"{out}/sub-1/templates/sub-1_roi-vvs_roi-mask.nii.gz").fit()
+    events = sub_df[sub_df["task"] == "study"]
+    runs = {b: load_run(cfg, d, masker) for b, d in sub_df[sub_df["boldfile"].isin(events["boldfile"])].groupby("boldfile")}
+    pattern = score_targets("e", spec, cfg, sub_df, runs, sets)
+    spec["aggregate"] = "volumes"
+    volumes = score_targets("e", spec, cfg, sub_df, runs, sets)
+    assert len(pattern) == len(volumes) and (volumes["n_volumes"] > 1).all()
+    # averaging r over single volumes is noisier, so it is lower than correlating the averaged pattern
+    t_p = pattern[pattern["comparison"] == "target"]["z"].mean()
+    t_v = volumes[volumes["comparison"] == "target"]["z"].mean()
+    assert 0 < t_v < t_p

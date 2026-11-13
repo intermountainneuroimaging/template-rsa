@@ -1,0 +1,291 @@
+{
+  "config_version": "1.0",
+  "created_by": "AKH",
+  "notes": "SPM12-ALIGNED variant: the Kim 2020 template RSA with the choices of the lab's other Clearvale pipeline (cval_mni_blanca_pipeline_spm12 v4.4.5) wherever this pipeline has the option -- see examples/clearvale/pipeline_alignment.md. Differences from config-cv-kim2020-denoised.json: (1) templates and category masks from FACE and PLACE localizer events only (neutral objects are not modelled, so each category mask is face > place / place > face); (2) one boxcar per image in the category GLM (no mini-block merging); (3) motion6 confounds only -- no FD scrubbing and no dropped initial volumes; (4) no high-pass filter on the pattern time series (detrend + z-score per run, as the MVPA pattern cache); (5) minimum mask size 3 voxels; (6) encoding fidelity = the mean of the single-TR correlations over the window (aggregate 'volumes'), Kim's primary N+1 measure. Still different: SPM12 vs nilearn GLM, the VVS mask file (set rois.vvs.mask_pattern to theirs on the HPC), and their GLM trims volumes before each run's first event.",
+  "event_extraction": {
+    "bids_root": "data/cv-bids",
+    "derivatives_root": "data/cv-bids/derivatives/bids-hcp",
+    "bold_glob": "sub-{subject}/ses-{session}/func/sub-{subject}_ses-{session}_task-{task}_dir-*_run-{run}_space-MNI152NLin6Asym_desc-preproc_bold.nii.gz",
+    "events_glob": "sub-*/ses-*/func/*_events.tsv",
+    "output_file": "data/cv-bids/out/kim2020_spm12aligned/master_spreadsheet.csv"
+  },
+  "events": {
+    "hierarchy": [
+      "category",
+      "subcategory",
+      "stimulus"
+    ]
+  },
+  "pattern_estimation": {
+    "confounds": {
+      "source": "file",
+      "file_pattern": "data/cv-bids/derivatives/confounds/sub-{subject}/ses-{session}/func/sub-{subject}_ses-{session}_task-{task}_dir-*_run-{run}_desc-confoundsfd_timeseries.tsv",
+      "columns": [
+        "trans_x",
+        "trans_y",
+        "trans_z",
+        "rot_x",
+        "rot_y",
+        "rot_z"
+      ]
+    },
+    "censoring": {
+      "drop_initial_volumes": 0,
+      "mode": "censor"
+    },
+    "glm": {
+      "hrf_model": "spm",
+      "drift_model": "cosine",
+      "high_pass": 0.0078,
+      "noise_model": "ar1",
+      "smoothing_fwhm": null,
+      "signal_scaling": 0
+    }
+  },
+  "rois": {
+    "vvs": {
+      "atlas_pattern": "data/cv-bids/derivatives/bids-hcp/sub-{subject}/ses-*/MNINonLinear/aparc+aseg.nii.gz",
+      "labels": [
+        1007,
+        1009,
+        1011,
+        1013,
+        1016,
+        2007,
+        2009,
+        2011,
+        2013,
+        2016
+      ]
+    }
+  },
+  "template_rsa": {
+    "rois": [
+      "vvs"
+    ],
+    "category_level": "category",
+    "subcategory_level": "subcategory",
+    "timeseries": {
+      "detrend": true,
+      "standardize": "zscore_sample",
+      "high_pass": null,
+      "regress_confounds": false
+    },
+    "templates": {
+      "events": {
+        "and": [
+          {
+            "column": "task",
+            "match": "exact",
+            "value": "loc"
+          },
+          {
+            "column": "trial_type",
+            "match": "regex",
+            "value": "(positive|negative|neutral)_(face|place)"
+          }
+        ]
+      },
+      "window": {
+        "start": {
+          "reference": "onset",
+          "offset_seconds": 4.6
+        },
+        "end": {
+          "reference": "offset_end",
+          "offset_seconds": 4.6
+        }
+      }
+    },
+    "feature_weighting": {
+      "levels": [
+        "item"
+      ],
+      "category_mask": {
+        "enabled": true,
+        "p_threshold": 0.05,
+        "cluster_extent": 10,
+        "min_voxels": 3,
+        "block_merge_gap_seconds": null
+      },
+      "item_contrast": "all_others",
+      "weight_target_patterns": true
+    },
+    "validation": {
+      "enabled": true,
+      "methods": [
+        "kim2020",
+        "cv"
+      ],
+      "cross_validation": {
+        "strategy": "per_run"
+      }
+    },
+    "targets": {
+      "wm_timecourse": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "regex",
+              "value": "WM(pos|neg)"
+            },
+            {
+              "column": "trial_type",
+              "match": "regex",
+              "value": "view_(face|place)"
+            }
+          ]
+        },
+        "mode": "timecourse",
+        "comparison_sets": [
+          "target"
+        ],
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 0
+          },
+          "end": {
+            "reference": "onset",
+            "offset_seconds": 13.8
+          }
+        },
+        "related_level": "category",
+        "extra_sets": {},
+        "group": {
+          "comparisons": [
+            "target"
+          ],
+          "overlay": {
+            "maintain": {
+              "column": "operation",
+              "match": "exact",
+              "value": "maintain",
+              "color": "green"
+            },
+            "suppress": {
+              "column": "operation",
+              "match": "exact",
+              "value": "suppress",
+              "color": "red"
+            },
+            "switch": {
+              "column": "operation",
+              "match": "exact",
+              "value": "switch",
+              "color": "blue"
+            },
+            "clear": {
+              "column": "operation",
+              "match": "exact",
+              "value": "clear",
+              "color": "orange"
+            }
+          }
+        },
+        "annotation": {
+          "trial_start_event": {
+            "column": "trial_type",
+            "match": "regex",
+            "value": "view_(face|place)"
+          },
+          "annotation_labels": {
+            "view": [
+              "view_face",
+              "view_place"
+            ],
+            "operation cue": [
+              "maintain_face",
+              "maintain_place",
+              "suppress_face",
+              "suppress_place",
+              "switch_face",
+              "switch_place",
+              "clear_face",
+              "clear_place"
+            ]
+          },
+          "next_trial": true
+        }
+      },
+      "encoding_fidelity": {
+        "events": {
+          "and": [
+            {
+              "column": "task",
+              "match": "regex",
+              "value": "WM(pos|neg)"
+            },
+            {
+              "column": "trial_type",
+              "match": "regex",
+              "value": "view_(face|place)"
+            }
+          ]
+        },
+        "mode": "window_mean",
+        "comparison_sets": [
+          "target",
+          "related",
+          "others"
+        ],
+        "window": {
+          "start": {
+            "reference": "onset",
+            "offset_seconds": 4.6
+          },
+          "end": {
+            "reference": "offset_end",
+            "offset_seconds": 4.6
+          }
+        },
+        "related_level": "category",
+        "group": {
+          "comparisons": [
+            "target",
+            "related",
+            "others"
+          ],
+          "overlay": {
+            "maintain": {
+              "column": "operation",
+              "match": "exact",
+              "value": "maintain",
+              "color": "green"
+            },
+            "suppress": {
+              "column": "operation",
+              "match": "exact",
+              "value": "suppress",
+              "color": "red"
+            },
+            "switch": {
+              "column": "operation",
+              "match": "exact",
+              "value": "switch",
+              "color": "blue"
+            },
+            "clear": {
+              "column": "operation",
+              "match": "exact",
+              "value": "clear",
+              "color": "orange"
+            }
+          }
+        },
+        "aggregate": "volumes"
+      }
+    }
+  },
+  "pipeline": {
+    "output_dir": "data/cv-bids/out/kim2020_spm12aligned",
+    "subjects": [
+      "090"
+    ],
+    "analyses": [
+      "template",
+      "fidelity"
+    ]
+  }
+}

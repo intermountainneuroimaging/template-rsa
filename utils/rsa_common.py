@@ -43,6 +43,7 @@ CV_STRATEGIES = {"per_run", "group_kfold", "explicit_groups"}
 FEATURE_LEVELS = {"item", "category", "none"}
 ITEM_CONTRASTS = {"all_others", "within_category", "within_subcategory"}
 TARGET_MODES = {"timecourse", "window_mean"}
+TARGET_AGGREGATES = {"pattern", "volumes"}
 
 PATTERN_METHODS = {"glm", "volume_average"}
 INSTANCE_LEVEL = "item_instance"  # pattern_estimation.level: one pattern per item instance (event of interest)
@@ -191,6 +192,10 @@ def default_config() -> dict:
                     "n_splits": None,           # group_kfold
                     "held_out_runs": None,      # explicit_groups: one list of run values per fold
                 },
+                # report matrices: items within each category > subcategory in the order first shown
+                # ("temporal": first template run, by onset; needs the master spreadsheet) or by name
+                # ("alphabetical"; use it when the presentation order is randomized per run / subject)
+                "matrix_order": "temporal",
             },
             "targets": {},
         },
@@ -207,6 +212,10 @@ TEMPLATE_TARGET_DEFAULTS = {
     "events": None,
     "mode": "timecourse",
     "window": None,
+    # mode "window_mean": "pattern" averages the window's volumes, then correlates once; "volumes"
+    # correlates every volume with the template, then averages the r's (Kim et al. 2020's encoding /
+    # trial N+1 fidelity: the mean of six single-TR correlations)
+    "aggregate": "pattern",
     "comparison_sets": ["target"],  # the trial's own item; "related" / "others" are opt-in controls
     "annotation": {                  # timecourse report markers (mvpa-decoding's timecourse annotation)
         "trial_start_event": None,   # query anchoring each trial (None: the target events themselves)

@@ -16,8 +16,10 @@ The notebooks start from that table; nothing here knows about any particular stu
   aggregation     subject_means (trials -> subject means), baseline_correct, subtract_reference,
                   summarize (mean / SEM / n over subjects)
   statistics      make_bins, bin_means, one_sample_by_bin, compare_groups_by_bin (rm ANOVA + pairwise),
-                  paired_contrast (paired t + subject bootstrap CI), rm_anova, pairwise_tests,
+                  paired_contrast (paired t + subject bootstrap CI), rm_anova, pairwise_tests, rm_tukey
+                  (Tukey-Kramer, rm error term), equal_trial_bootstrap (Kim's 15-trial bootstrap),
                   mixed_model, first_significant_bin, fdr
+  trial filters   complete_trials (timecourses with every TR)
   plots           plot_timecourse (mean +- SEM, significance markers per bin), plot_points
   outputs         save_outputs (PDF of the figures, one CSV per table, the settings as JSON)
   teaching        make_toy_scores (a small synthetic table for the worked example)
@@ -147,14 +149,37 @@ def subject_means(df: pd.DataFrame, by, value: str = "z") -> pd.DataFrame:
         **{value: (value, "mean"), "n_trials": (value, "size")})
 
 
-def baseline_correct(sub: pd.DataFrame, baseline_trs, by, x: str = "tr_offset", value: str = "z") -> pd.DataFrame:
-    """Subtract each subject x `by` curve's mean over x in [baseline_trs[0], baseline_trs[1])."""
+def baseline_correct(sub: pd.DataFrame, baseline_trs, by, x: str = "tr_offset", value: str = "z",
+                     mode: str = "subject") -> pd.DataFrame:
+    """Baseline over x in [baseline_trs[0], baseline_trs[1]). mode "subject": subtract each subject x `by`
+    curve's own mean; "group": subtract one constant per `by` group -- the mean over subjects, then over the
+    baseline TRs (Kim et al. 2020's grp_analysis_timecourse_rsa_sorted.m); "none": unchanged (raw)."""
+    if mode == "none":
+        return sub.copy()
     a, b = baseline_trs
+    window = sub[(sub[x] >= a) & (sub[x] < b)]
+    if mode == "group":
+        keys = list(by)
+        per_tr = window.groupby([*keys, x], dropna=False)[value].mean()
+        base = per_tr.groupby(level=list(range(len(keys))), dropna=False).mean().rename("_base") if keys else None
+        out = sub.join(base, on=keys) if keys else sub.assign(_base=per_tr.mean())
+        out[value] = out[value] - out["_base"]
+        return out.drop(columns="_base")
+    if mode != "subject":
+        raise ValueError(f"baseline mode must be 'subject', 'group' or 'none' (got {mode!r})")
     keys = ["subject", *by]
-    base = sub[(sub[x] >= a) & (sub[x] < b)].groupby(keys, dropna=False)[value].mean().rename("_base")
+    base = window.groupby(keys, dropna=False)[value].mean().rename("_base")
     out = sub.join(base, on=keys)
     out[value] = out[value] - out["_base"]
     return out.drop(columns="_base")
+
+
+def complete_trials(df: pd.DataFrame, n_trs: int, x: str = "tr_offset", value: str = "z") -> pd.DataFrame:
+    """Keep only events scored at every x in 0..n_trs-1 (finite value), e.g. timecourses not cut short by
+    the end of the run or by censored volumes."""
+    ok = df[np.isfinite(df[value]) & (df[x] < n_trs)].groupby(EVENT_KEY)[x].nunique()
+    keep = ok[ok == n_trs].index
+    return df.set_index(EVENT_KEY).loc[lambda d: d.index.isin(keep)].reset_index()
 
 
 def subtract_reference(sub: pd.DataFrame, column: str, reference, by, value: str = "z") -> pd.DataFrame:
@@ -239,6 +264,65 @@ def pairwise_tests(long: pd.DataFrame, dv: str, within: str, levels=None) -> pd.
     if len(out):
         out["p_fdr"] = fdr(out["p"])
     return out
+
+
+def rm_tukey(long: pd.DataFrame, dv: str, within: str, levels, pairs=None) -> pd.DataFrame:
+    """Tukey-Kramer comparisons with the repeated-measures ANOVA error term (subjects with every level),
+    as in Kim et al. 2020's Fig. 5 post hocs: q = |mean_a - mean_b| / sqrt(MSE / n), p from the
+    studentized range with k levels and (n-1)(k-1) df. `pairs` (default: every pair) only selects which
+    rows are returned; the family is always all k levels."""
+    wide = long.pivot_table(index="subject", columns=within, values=dv, aggfunc="mean")
+    levels = [lv for lv in levels if lv in wide.columns]
+    data = wide[levels].dropna()
+    n, k = data.shape
+    if n < 2 or k < 2:
+        return pd.DataFrame()
+    v = data.to_numpy(float)
+    means = v.mean(axis=0)
+    resid = v - v.mean(axis=1, keepdims=True) - means + v.mean()
+    df_err = (n - 1) * (k - 1)
+    mse = float(np.square(resid).sum() / df_err)
+    rows = []
+    for a, b in pairs or list(itertools.combinations(levels, 2)):
+        if a not in levels or b not in levels:
+            continue
+        i, j = levels.index(a), levels.index(b)
+        q = abs(means[i] - means[j]) / np.sqrt(mse / n)
+        rows.append({"a": a, "b": b, "n": n, "k": k, "mean_diff": means[i] - means[j], "q": q,
+                     "df_error": df_err, "p_tukey": float(stats.studentized_range.sf(q, k, df_err))})
+    return pd.DataFrame(rows)
+
+
+def equal_trial_bootstrap(trials: pd.DataFrame, group_col: str, split_col: str, levels=("same", "different"),
+                          n_trials: int = 15, value: str = "z", n_boot=None, seed=None) -> tuple:
+    """Kim et al. 2020's equal-trial-count bootstrap (rsa_decode_04_bootstrap.m): per iteration, draw
+    n_trials trials with replacement from every subject x group x split cell, average within subject, then
+    over subjects (subjects with both splits only). -> (summary per group x component with the 5th-95th
+    percentile interval and an empirical two-sided p vs 0, pairwise group differences)."""
+    n_boot = int(n_boot or setting("N_BOOTSTRAP"))
+    rng = np.random.default_rng(setting("SEED") if seed is None else seed)
+    a, b = levels
+    draws = {}
+    for g, part in trials.groupby(group_col):
+        cells = {(s, sp): x[value].dropna().to_numpy(float) for (s, sp), x in part.groupby(["subject", split_col])}
+        subs = sorted(s for s in {s for s, _ in cells} if len(cells.get((s, a), [])) and len(cells.get((s, b), [])))
+        if not subs:
+            continue
+        means = {sp: np.vstack([cells[(s, sp)][rng.integers(0, len(cells[(s, sp)]), (n_boot, n_trials))].mean(axis=1)
+                                for s in subs]).mean(axis=0) for sp in (a, b)}
+        draws[g] = {a: means[a], b: means[b], f"{a} - {b}": means[a] - means[b], "n_subjects": len(subs)}
+    rows, pairs = [], []
+    for g, d in draws.items():
+        for comp in (a, b, f"{a} - {b}"):
+            x = d[comp]
+            lo, hi = np.percentile(x, [5, 95])
+            rows.append({group_col: g, "component": comp, "n_subjects": d["n_subjects"], "mean": x.mean(),
+                         "ci5": lo, "ci95": hi, "p_boot": min(1.0, 2 * min((x <= 0).mean(), (x >= 0).mean()))})
+    for g1, g2 in itertools.combinations(draws, 2):
+        diff = draws[g1][f"{a} - {b}"] - draws[g2][f"{a} - {b}"]
+        pairs.append({"a": g1, "b": g2, "mean_diff": diff.mean(),
+                      "p_boot": min(1.0, 2 * min((diff <= 0).mean(), (diff >= 0).mean()))})
+    return pd.DataFrame(rows), pd.DataFrame(pairs)
 
 
 def compare_groups_by_bin(binned: pd.DataFrame, group_col: str, value: str = "z") -> pd.DataFrame:
