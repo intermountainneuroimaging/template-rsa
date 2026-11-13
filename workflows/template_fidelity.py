@@ -11,11 +11,13 @@ its window, mode "timecourse" -- is correlated with the template of the event's 
 finest events.hierarchy level): the target pattern is cut to that template's category mask and
 weighted by its weights (feature_weighting.weight_target_patterns), then Pearson r. Only the
 templates a set needs are scored. Opt-in sets (targets.<set>.comparison_sets, extra_sets):
-  target   the event's own item (the default, and usually the only set)
-  related  the other items of its category (or subcategory: related_level) -- a control:
-           target - related is the item-specific part of the score
-  others   the items of the other categories
-  <name>   extra_sets: the templates whose item / category / subcategory is named in another
+  target               the event's own item (the default, and usually the only set)
+  related_subcategory  the other items of its subcategory -- the closest other images (a control:
+                       target - related_subcategory is the item-specific part of the score)
+  related_category     the other items of its category, every subcategory -- the broader set
+  related              related_subcategory or related_category, as set by related_level
+  others               the items of the other categories
+  <name>               extra_sets: the templates whose item / category / subcategory is named in another
            events column (e.g. every template of the replacement category on replace trials)
 mode "timecourse": one score per volume from the window start (unshifted), e.g. 30 TRs from trial
 onset; mode "window_mean": one score per event -- aggregate "pattern" (default) averages the window's

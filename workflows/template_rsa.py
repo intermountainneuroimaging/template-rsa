@@ -94,10 +94,16 @@ class RunData:
 
 def target_specs(cfg: dict) -> dict:
     """Target sets with defaults filled in. Scored sets: `comparison_sets` (default the trial's own item
-    only; "related" / "others" opt in) plus any `extra_sets`; group.comparisons defaults to all of them."""
+    only; "related_subcategory" / "related_category" / "related" / "others" opt in) plus any `extra_sets`;
+    group.comparisons defaults to all of them."""
     specs = {}
+    no_subcategory = not template_levels(cfg)[1]
     for name, spec in cfg["template_rsa"]["targets"].items():
         spec = merge_with_defaults(spec, copy.deepcopy(TEMPLATE_TARGET_DEFAULTS))
+        if no_subcategory:  # no subcategory level: related_subcategory does not exist -- drop it, not an empty set
+            spec["comparison_sets"] = [c for c in spec["comparison_sets"] if c != "related_subcategory"]
+            if spec["group"].get("comparisons"):
+                spec["group"]["comparisons"] = [c for c in spec["group"]["comparisons"] if c != "related_subcategory"]
         if not spec["group"].get("comparisons"):
             spec["group"]["comparisons"] = list(spec["comparison_sets"]) + list(spec["extra_sets"])
         specs[name] = spec
@@ -288,14 +294,24 @@ def fisher_z(r):
 
 
 def comparison_sets(ts: TemplateSet, item: str, related_level: str) -> dict:
+    """The templates each built-in comparison set averages over, for a trial (or item instance) of `item`:
+      target               the item itself
+      related_subcategory  the other items of its subcategory (the closest other images; needs subcategories)
+      related_category     the other items of its category (the broader set, every subcategory)
+      related              related_subcategory or related_category, as set by related_level
+      others               the items of the other categories"""
     row = ts.items.set_index("item").loc[item]
-    same = ts.items[ts.items["category"] == row["category"]]
-    if related_level == "subcategory" and "subcategory" in ts.items and pd.notna(row.get("subcategory")):
-        related = same[(same["subcategory"] == row["subcategory"]) & (same["item"] != item)]["item"].tolist()
-    else:
-        related = same[same["item"] != item]["item"].tolist()
-    others = ts.items[ts.items["category"] != row["category"]]["item"].tolist()
-    return {"target": [item], "related": related, "others": others}
+    same = ts.items[(ts.items["category"] == row["category"]) & (ts.items["item"] != item)]
+    sets = {"target": [item], "related_category": same["item"].tolist()}
+    if "subcategory" in ts.items and pd.notna(row.get("subcategory")):
+        sets["related_subcategory"] = same[same["subcategory"] == row["subcategory"]]["item"].tolist()
+    sets["related"] = sets.get("related_subcategory", sets["related_category"]) if related_level == "subcategory" \
+        else sets["related_category"]
+    sets["others"] = ts.items[ts.items["category"] != row["category"]]["item"].tolist()
+    return sets
+
+
+VALIDATION_SETS = ("target", "related_subcategory", "related_category", "others")
 
 
 def build_template_sets(cfg, tmpl_events, runs, items, category_masks, category_t, item_t) -> dict:
@@ -373,15 +389,23 @@ def row_correlations(Q: np.ndarray, rows: np.ndarray) -> np.ndarray:
     return out
 
 
-def comparison_of(cat: dict, row_item: str, col_item: str) -> str:
-    return "target" if row_item == col_item else "related" if cat[row_item] == cat[col_item] else "others"
+def comparisons_of(cat: dict, sub: dict, row_item: str, col_item: str) -> list:
+    """The validation sets a (row item, column item) pair counts toward (related_subcategory pairs also
+    count toward the broader related_category)."""
+    if row_item == col_item:
+        return ["target"]
+    if cat[row_item] != cat[col_item]:
+        return ["others"]
+    same_sub = sub.get(row_item) is not None and pd.notna(sub.get(row_item)) and sub.get(row_item) == sub.get(col_item)
+    return ["related_subcategory", "related_category"] if same_sub else ["related_category"]
 
 
 def validate_kim2020(ts: TemplateSet, level: str, units: list):
     """The published localizer validation (Kim et al. 2020, rsa_decode_02_item.m, "targ vs. non-targ"):
     every item instance unit (item x run) correlated with every other one. Each pattern is weighted by
     ITS OWN item's weights; both are cut to the row item's category mask; the identical pair is dropped.
-    Each pair is Fisher-z'd; a unit's target / related / others score is the mean z of its pairs.
+    Each pair is Fisher-z'd; a unit's target / related_subcategory / related_category / others score is the
+    mean z of its pairs (related_category: every other item of the category, related_subcategory included).
     Feature selection (masks, weights) uses all template runs, as published.
     -> (pairs DataFrame, summary rows)."""
     units = [u for u in units if u["item"] in ts.templates]
@@ -391,6 +415,7 @@ def validate_kim2020(ts: TemplateSet, level: str, units: list):
     PW = np.array([u["pattern"] * ts.weights[e] for u, e in zip(units, ex)])
     pairs, summary = [], []
     cat = ts.items.set_index("item")["category"].to_dict()
+    sub = ts.items.set_index("item")["subcategory"].to_dict() if "subcategory" in ts.items else {}
     by_mask = {}
     for i, e in enumerate(ex):
         by_mask.setdefault(cat[e], []).append(i)
@@ -398,13 +423,13 @@ def validate_kim2020(ts: TemplateSet, level: str, units: list):
         m = ts.masks[ex[rows[0]]]
         R = row_correlations(PW[:, m], np.array(rows))
         for a, i in enumerate(rows):
-            sets = {"target": [], "related": [], "others": []}
+            sets = {s: [] for s in VALIDATION_SETS}
             for j in range(len(units)):
                 if j == i:
                     continue
                 z = fisher_z(R[a, j])
-                comp = comparison_of(cat, ex[i], ex[j])
-                sets[comp].append(z)
+                for comp in comparisons_of(cat, sub, ex[i], ex[j]):
+                    sets[comp].append(z)
                 pairs.append(("kim2020", level, "all", ex[i], units[i]["item_instance"], ex[j], units[j]["item_instance"],
                               R[a, j], z))
             for comp, zs in sets.items():
@@ -471,6 +496,8 @@ def validate_cv(cfg, sub_df, runs, masker, items, tmpl_events, folds):
                 rs = {j: ts.score(pat, j) for j in ts.templates}
                 pairs += [("cv", level, fold, item, seen[item], j, 0, r, fisher_z(r)) for j, r in rs.items()]
                 for comp, members in comparison_sets(ts, item, "category").items():
+                    if comp not in VALIDATION_SETS:
+                        continue
                     r = np.nanmean([rs[m] for m in members]) if members else np.nan
                     if np.isfinite(r):
                         summary.append({"method": "cv", "level": level, "fold": fold, "item": item,

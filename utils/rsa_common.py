@@ -233,7 +233,7 @@ TEMPLATE_TARGET_DEFAULTS = {
         "comparisons": None,         # None: every scored set (comparison_sets + extra_sets)
     },
 }
-COMPARISON_SETS = {"target", "related", "others"}
+COMPARISON_SETS = {"target", "related_subcategory", "related_category", "related", "others"}
 EXTRA_SET_LEVELS = {"item", "category", "subcategory"}
 # keys of earlier template_rsa versions whose (study-specific) analyses now live in the post-hoc
 # notebooks (_interactive_notebooks/); the validator points there instead of silently ignoring them

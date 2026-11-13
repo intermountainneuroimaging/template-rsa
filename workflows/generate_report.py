@@ -449,7 +449,8 @@ def workflow_boxes(cfg, subjects) -> dict:
                 lines.append(f"cv ({c['strategy']}" + (f", {c['n_splits']} splits" if c.get("n_splits") else "")
                              + "): masks, weights and templates refit on the training runs; each held-out "
                              "item instance scored against every fold template as a target")
-        lines.append("summary: target (same item) / related (same category) / others (other categories)")
+        lines.append("summary: target (same item) / related_subcategory (other items, same subcategory) / "
+                     "related_category (other items, same category) / others (other categories)")
         boxes["validation"] = ("Template validation", lines)
         if "fidelity" in analyses:
             from workflows.template_rsa import target_specs
@@ -457,6 +458,8 @@ def workflow_boxes(cfg, subjects) -> dict:
             for name, spec in target_specs(cfg).items():
                 sets = list(spec["comparison_sets"]) + [f"{x} (extra)" for x in spec["extra_sets"]]
                 rel = f" (related = same {spec['related_level']})" if "related" in spec["comparison_sets"] else ""
+                rel += " (related_subcategory = same subcategory; related_category = same category)" \
+                    if {"related_subcategory", "related_category"} & set(spec["comparison_sets"]) else ""
                 g = spec["group"]
                 by = (f"; lines: {', '.join(g['overlay'])}" if g.get("overlay")
                       else f"; lines by {' x '.join(g['group_by'])}" if g.get("group_by") else "")
@@ -531,20 +534,23 @@ def item_instance_caption(items: pd.DataFrame, method: str, subject: str = None,
 
 
 def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
-    """target / related / others per method x level: mean +- SEM over item instances (subject) or subjects (group)."""
-    comps = ["target", "related", "others"]
+    """target / related_subcategory / related_category / others per method x level: mean +- SEM over item
+    instances (subject) or subjects (group). Older outputs with a single "related" set are drawn as they are."""
+    order = ["target", "related_subcategory", "related_category", "related", "others"]
+    comps = [c for c in order if c in set(summary["comparison"])]
     rank = {"kim2020": 0, "cv": 1}
     groups = sorted(summary[["method", "level"]].drop_duplicates().itertuples(index=False, name=None),
                     key=lambda g: (rank.get(g[0], 9), g[1] != "item", g[1]))
     width = 0.8 / len(comps)
+    labels = {"related_subcategory": "same subcategory", "related_category": "same category"}
     for j, comp in enumerate(comps):
         for i, (m, lv) in enumerate(groups):
             vals = summary[(summary["method"] == m) & (summary["level"] == lv) & (summary["comparison"] == comp)]["z"].dropna()
             if vals.empty:
                 continue
-            x = i + (j - 1) * width
+            x = i + (j - (len(comps) - 1) / 2) * width
             ax.bar(x, vals.mean(), width * 0.9, yerr=vals.sem() if len(vals) > 1 else None, capsize=2, color=f"C{j}",
-                   label=comp if i == 0 else None)
+                   label=labels.get(comp, comp) if i == 0 else None)
             if by_subject:
                 ax.scatter(np.full(len(vals), x), vals, s=6, color="k", zorder=3)
     ax.axhline(0, color="k", lw=0.8)
@@ -770,7 +776,7 @@ def template_section(pdf, cfg, output_dir, subjects, subject=None):
                      fontsize=13, weight="bold", x=0.07, ha="left", y=0.97)
         gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.1], left=0.1, right=0.95, top=0.9, bottom=0.08, hspace=0.45)
         validation_bars(fig.add_subplot(gs[0]), val, by_subject=not subject)
-        fig.axes[-1].set_title("target / related / others (mean +- SEM over "
+        fig.axes[-1].set_title("target / same subcategory / same category / others (mean +- SEM over "
                                + ("item instances" if subject else "subjects; dots = subjects") + ")", fontsize=9, loc="left")
         ax = fig.add_subplot(gs[1])
         ax.axis("off")

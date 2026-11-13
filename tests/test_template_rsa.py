@@ -62,11 +62,20 @@ def test_validation_and_post_test_rank_target_related_others(run):
     val = group_file(out, "template-validation.csv")
     # cv scores like a target (template j's weights on both vectors): target > related > others.
     cv = val[(val["level"] == "item") & (val["method"] == "cv")].groupby("comparison")["z"].mean()
-    assert cv["target"] > cv["related"] > cv["others"]
+    assert cv["target"] > cv["related_subcategory"] > cv["others"] and cv["related_category"] > cv["others"]
+    # synthetic items share a subcategory pattern on top of the category one: same subcategory > same category
+    assert cv["related_subcategory"] > cv["related_category"]
+    assert "related" not in set(val["comparison"])
     # kim2020 weights each pattern by its own item's item-vs-others t map, which removes most of the shared
     # category signal from the synthetic patterns: only the same-item pairs stand out.
     kim = val[(val["level"] == "item") & (val["method"] == "kim2020")].groupby("comparison")["z"].mean()
-    assert kim["target"] > kim["related"] + 0.5 and kim["target"] > kim["others"] + 0.5
+    assert kim["target"] > kim["related_category"] + 0.5 and kim["target"] > kim["others"] + 0.5
+    assert kim["target"] > kim["related_subcategory"] + 0.5
+    # related_category includes the same-subcategory pairs: every unit has at least as many pairs there
+    sv = pd.read_csv(f"{out}/sub-1/templates/sub-1_roi-vvs_template-validation.csv")
+    k = sv[(sv["level"] == "item") & (sv["method"] == "kim2020")].pivot_table(
+        index=["item", "item_instance"], columns="comparison", values="n_pairs")
+    assert (k["related_category"] >= k["related_subcategory"]).all()
     post = group_file(out, "target-posttest_subject-means.csv", "fidelity")
     p = post[post["level"] == "item"].groupby("comparison")["z"].mean()
     assert p["target"] > p["related"] > p["others"]
@@ -277,3 +286,50 @@ def test_window_aggregate_volumes_averages_single_volume_correlations(run):
     t_p = pattern[pattern["comparison"] == "target"]["z"].mean()
     t_v = volumes[volumes["comparison"] == "target"]["z"].mean()
     assert 0 < t_v < t_p
+
+
+def test_related_subcategory_and_category_sets_are_nested_and_scored(run):
+    import copy
+    from workflows.template_fidelity import load_templates, score_targets
+    from workflows.template_rsa import comparison_sets, load_run, target_specs
+    from nilearn.maskers import NiftiMasker
+    _, cfg, df, out = run
+    sets, _ = load_templates(f"{out}/sub-1/templates", "1", "vvs", ["item"])
+    ts = sets["item"]
+    item = ts.items["item"].iloc[0]
+    cs = comparison_sets(ts, item, "category")
+    row = ts.items.set_index("item").loc[item]
+    assert set(cs["related_subcategory"]) < set(cs["related_category"])          # nested, strictly smaller
+    assert item not in cs["related_category"] and cs["related"] == cs["related_category"]
+    assert all(ts.items.set_index("item").loc[m, "subcategory"] == row["subcategory"] for m in cs["related_subcategory"])
+    assert comparison_sets(ts, item, "subcategory")["related"] == cs["related_subcategory"]
+    spec = copy.deepcopy(target_specs(cfg)["encoding_fidelity"])
+    spec["comparison_sets"] = ["target", "related_subcategory", "related_category", "others"]
+    sub_df = df[df["subject"] == "1"]
+    masker = NiftiMasker(mask_img=f"{out}/sub-1/templates/sub-1_roi-vvs_roi-mask.nii.gz").fit()
+    ev = sub_df[sub_df["task"] == "study"]
+    runs = {b: load_run(cfg, d, masker) for b, d in sub_df[sub_df["boldfile"].isin(ev["boldfile"])].groupby("boldfile")}
+    scores = score_targets("e", spec, cfg, sub_df, runs, sets)
+    assert set(scores["comparison"]) == set(spec["comparison_sets"])
+    z = scores.groupby("comparison")["z"].mean()
+    assert z["target"] > z["related_subcategory"] > z["related_category"] > z["others"]
+
+
+def test_related_subcategory_is_dropped_without_a_subcategory_level(run):
+    import copy
+    from workflows.template_rsa import comparisons_of, target_specs
+    _, cfg, df, _ = run
+    flat = copy.deepcopy(cfg)
+    flat["template_rsa"]["subcategory_level"] = None
+    flat["events"]["hierarchy"] = ["category", "stimulus"]
+    spec = flat["template_rsa"]["targets"]["encoding_fidelity"]
+    spec["comparison_sets"] = ["target", "related_subcategory", "related_category", "others"]
+    spec["group"]["comparisons"] = list(spec["comparison_sets"])
+    s = target_specs(flat)["encoding_fidelity"]
+    assert "related_subcategory" not in s["comparison_sets"] and "related_subcategory" not in s["group"]["comparisons"]
+    assert "related_category" in s["comparison_sets"]
+    errors, warnings = validate(flat, df)
+    assert not [e for e in errors if "related_subcategory" in e]
+    assert any("related_subcategory" in w for w in warnings)
+    # validation pairs: without subcategories a same-category pair counts only toward related_category
+    assert comparisons_of({"a": "face", "b": "face"}, {}, "a", "b") == ["related_category"]

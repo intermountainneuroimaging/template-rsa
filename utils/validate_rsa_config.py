@@ -195,6 +195,9 @@ def validate_template(cfg: dict, df, subjects: list):
         if unscored:
             errors.append(f"{path}.group.comparisons: {sorted(unscored)} are not scored; add them to comparison_sets "
                           "(related / others) or extra_sets")
+        if "related_subcategory" in (tr["targets"][name].get("comparison_sets") or []) and not subcategory:
+            warnings.append(f"{path}.comparison_sets: 'related_subcategory' is left out -- there is no "
+                            "template_rsa.subcategory_level (related_category is still scored)")
         if spec["related_level"] == "subcategory" and not subcategory:
             errors.append(f"{path}.related_level 'subcategory' needs template_rsa.subcategory_level")
         raw_spec = tr["targets"][name]
@@ -212,7 +215,7 @@ def validate_template(cfg: dict, df, subjects: list):
                 errors.append(f"{path}.extra_sets.{xname}.level must be one of {sorted(EXTRA_SET_LEVELS)}")
             elif xs.get("level") == "subcategory" and not subcategory:
                 errors.append(f"{path}.extra_sets.{xname}: level 'subcategory' needs template_rsa.subcategory_level")
-            if xname in ("target", "related", "others"):
+            if xname in COMPARISON_SETS:
                 errors.append(f"{path}.extra_sets.{xname}: name clashes with a built-in comparison set")
         for col in spec["group"]["group_by"] or []:
             if col not in columns:
