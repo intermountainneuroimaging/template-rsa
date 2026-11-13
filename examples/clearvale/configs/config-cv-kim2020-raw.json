@@ -213,7 +213,8 @@
         "mode": "window_mean",
         "comparison_sets": [
           "target",
-          "related",
+          "related_subcategory",
+          "related_category",
           "others"
         ],
         "window": {
@@ -230,7 +231,8 @@
         "group": {
           "comparisons": [
             "target",
-            "related",
+            "related_subcategory",
+            "related_category",
             "others"
           ],
           "overlay": {

@@ -11,14 +11,18 @@ its window, mode "timecourse" -- is correlated with the template of the event's 
 finest events.hierarchy level): the target pattern is cut to that template's category mask and
 weighted by its weights (feature_weighting.weight_target_patterns), then Pearson r. Only the
 templates a set needs are scored. Opt-in sets (targets.<set>.comparison_sets, extra_sets):
-  target   the event's own item (the default, and usually the only set)
-  related  the other items of its category (or subcategory: related_level) -- a control:
-           target - related is the item-specific part of the score
-  others   the items of the other categories
-  <name>   extra_sets: the templates whose item / category / subcategory is named in another
+  target               the event's own item (the default, and usually the only set)
+  related_subcategory  the other items of its subcategory -- the closest other images (a control:
+                       target - related_subcategory is the item-specific part of the score)
+  related_category     the other items of its category, every subcategory -- the broader set
+  related              related_subcategory or related_category, as set by related_level
+  others               the items of the other categories
+  <name>               extra_sets: the templates whose item / category / subcategory is named in another
            events column (e.g. every template of the replacement category on replace trials)
 mode "timecourse": one score per volume from the window start (unshifted), e.g. 30 TRs from trial
-onset; mode "window_mean": the window's volumes are averaged first, one score per event.
+onset; mode "window_mean": one score per event -- aggregate "pattern" (default) averages the window's
+volumes first and correlates once; aggregate "volumes" correlates every volume and averages the r's
+(Kim et al. 2020's encoding fidelity: the mean of six single-TR correlations).
 
 The templates come from all template runs, so target events must come from other runs (a held-out
 test, as the WM runs are for the localizer in Kim et al. 2020). Target events inside template runs
@@ -94,7 +98,8 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
             needed = list(dict.fromkeys(m for _, sets in todo for members in sets.values() for m in members))
             col_of = {it: j for j, it in enumerate(needed)}
             # only the templates some event needs (the trial's own item, unless more sets are opted in)
-            S = score_matrix(ts, rd.clean, needed) if spec["mode"] == "timecourse" and needed else None
+            per_volume = spec["mode"] == "timecourse" or spec.get("aggregate", "pattern") == "volumes"
+            S = score_matrix(ts, rd.clean, needed) if per_volume and needed else None
             for ev, sets in todo:
                 meta = {c: ev[c] for c in meta_cols}
                 if spec["mode"] == "timecourse":
@@ -106,6 +111,18 @@ def score_targets(name, spec, cfg, sub_df, runs, template_sets) -> pd.DataFrame:
                             rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
                                          "tr_offset": k, "time_s": k * rd.tr, "volume": int(vol),
                                          "n_items": len(members), "r": r, "z": fisher_z(r)})
+                elif spec.get("aggregate", "pattern") == "volumes":
+                    vols = window_volumes(spec["window"], float(ev["onset"]), float(ev["duration"]),
+                                          rd.tr, rd.n_frames)
+                    if len(vols) == 0:
+                        continue
+                    for comp, members in sets.items():
+                        cols = [col_of[m] for m in members]
+                        per_vol = np.nanmean(S[np.ix_(vols, cols)], axis=1) if members else np.full(len(vols), np.nan)
+                        n_ok = int(np.isfinite(per_vol).sum())
+                        r = float(np.nanmean(per_vol)) if n_ok else np.nan
+                        rows.append({**meta, "target_set": name, "level": level, "comparison": comp,
+                                     "n_items": len(members), "n_volumes": n_ok, "r": r, "z": fisher_z(r)})
                 else:
                     y = event_pattern(rd, spec["window"], ev)
                     if y is None:

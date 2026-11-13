@@ -33,7 +33,7 @@ from utils.rsa_common import (
     RDM_METHODS, RDM_METHODS_NEEDING_CV, check_glm_options, check_hierarchy, format_pattern, hierarchy,
     label_events, load_config, rdm_level, read_master_spreadsheet, resolve_rows, row_names,
     validate_model_rdms, validate_query_node,
-    validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_MODES, evaluate_query_node,
+    validate_weighted_models, ANALYSES, FEATURE_LEVELS, ITEM_CONTRASTS, TARGET_AGGREGATES, TARGET_MODES, evaluate_query_node,
     roi_source_path, validate_roi, validate_window, EXTRA_SET_LEVELS, POSTHOC_GROUP_KEYS, POSTHOC_TARGET_KEYS,
     CV_STRATEGIES, VALIDATION_METHODS, COMPARISON_SETS, overlay_query,
 )
@@ -154,6 +154,9 @@ def validate_template(cfg: dict, df, subjects: list):
     bad = set(val.get("methods") or []) - VALIDATION_METHODS
     if bad:
         errors.append(f"template_rsa.validation.methods: unknown {sorted(bad)}; use {sorted(VALIDATION_METHODS)}")
+    if val.get("matrix_order", "temporal") not in ("temporal", "alphabetical"):
+        errors.append(f"template_rsa.validation.matrix_order must be \"temporal\" or \"alphabetical\" "
+                      f"(got {val.get('matrix_order')!r})")
     cv = val.get("cross_validation") or {}
     if "cv" in (val.get("methods") or []):
         if cv.get("strategy") not in CV_STRATEGIES:
@@ -173,6 +176,10 @@ def validate_template(cfg: dict, df, subjects: list):
         path = f"template_rsa.targets.{name}"
         if spec["mode"] not in TARGET_MODES:
             errors.append(f"{path}.mode must be one of {sorted(TARGET_MODES)}")
+        if spec.get("aggregate", "pattern") not in TARGET_AGGREGATES:
+            errors.append(f"{path}.aggregate must be one of {sorted(TARGET_AGGREGATES)}")
+        elif spec.get("aggregate", "pattern") != "pattern" and spec["mode"] != "window_mean":
+            warnings.append(f"{path}.aggregate applies to mode \"window_mean\" only; ignored for {spec['mode']}")
         if not spec["events"]:
             errors.append(f"{path}.events: query is required")
             continue
@@ -188,6 +195,9 @@ def validate_template(cfg: dict, df, subjects: list):
         if unscored:
             errors.append(f"{path}.group.comparisons: {sorted(unscored)} are not scored; add them to comparison_sets "
                           "(related / others) or extra_sets")
+        if "related_subcategory" in (tr["targets"][name].get("comparison_sets") or []) and not subcategory:
+            warnings.append(f"{path}.comparison_sets: 'related_subcategory' is left out -- there is no "
+                            "template_rsa.subcategory_level (related_category is still scored)")
         if spec["related_level"] == "subcategory" and not subcategory:
             errors.append(f"{path}.related_level 'subcategory' needs template_rsa.subcategory_level")
         raw_spec = tr["targets"][name]
@@ -205,7 +215,7 @@ def validate_template(cfg: dict, df, subjects: list):
                 errors.append(f"{path}.extra_sets.{xname}.level must be one of {sorted(EXTRA_SET_LEVELS)}")
             elif xs.get("level") == "subcategory" and not subcategory:
                 errors.append(f"{path}.extra_sets.{xname}: level 'subcategory' needs template_rsa.subcategory_level")
-            if xname in ("target", "related", "others"):
+            if xname in COMPARISON_SETS:
                 errors.append(f"{path}.extra_sets.{xname}: name clashes with a built-in comparison set")
         for col in spec["group"]["group_by"] or []:
             if col not in columns:

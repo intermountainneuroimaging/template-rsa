@@ -348,12 +348,15 @@ def matrix_order(items: pd.DataFrame) -> list:
 
 
 def draw_validation_matrix(ax, cells: pd.DataFrame, items: pd.DataFrame, title: str, value: str = "z",
-                           colorbar: bool = True, labels: bool = True):
+                           colorbar: bool = True, labels: bool = True, item_order: list = None):
     """Item instance-level validation matrix: rows = (row_item, row_item_instance), columns =
     (col_item, col_item_instance), every item instance shown separately (no averaging over instances).
-    Sorted by category > subcategory > item > item instance; category boundaries in black, subcategory
-    boundaries in gray; missing cells (e.g. the identical pair) are blank. -> the image (for a colorbar)."""
-    order = {e: k for k, e in enumerate(matrix_order(items))}
+    Sorted by category > subcategory > item > item instance, items in `item_order` if given (e.g. the order
+    they were shown; it must keep categories / subcategories together), else by name; category boundaries in
+    black, subcategory boundaries in gray; missing cells (e.g. the identical pair) are blank. -> the image."""
+    names = [str(e) for e in item_order] if item_order else matrix_order(items)
+    names += [e for e in matrix_order(items) if e not in set(names)]
+    order = {e: k for k, e in enumerate(names)}
     cells = cells[cells["row_item"].astype(str).isin(order) & cells["col_item"].astype(str).isin(order)]
     rows = cells[["row_item", "row_item_instance"]].drop_duplicates().astype({"row_item": str})
     cols = cells[["col_item", "col_item_instance"]].drop_duplicates().astype({"col_item": str})

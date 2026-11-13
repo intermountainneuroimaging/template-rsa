@@ -449,7 +449,8 @@ def workflow_boxes(cfg, subjects) -> dict:
                 lines.append(f"cv ({c['strategy']}" + (f", {c['n_splits']} splits" if c.get("n_splits") else "")
                              + "): masks, weights and templates refit on the training runs; each held-out "
                              "item instance scored against every fold template as a target")
-        lines.append("summary: target (same item) / related (same category) / others (other categories)")
+        lines.append("summary: target (same item) / related_subcategory (other items, same subcategory) / "
+                     "related_category (other items, same category) / others (other categories)")
         boxes["validation"] = ("Template validation", lines)
         if "fidelity" in analyses:
             from workflows.template_rsa import target_specs
@@ -457,6 +458,8 @@ def workflow_boxes(cfg, subjects) -> dict:
             for name, spec in target_specs(cfg).items():
                 sets = list(spec["comparison_sets"]) + [f"{x} (extra)" for x in spec["extra_sets"]]
                 rel = f" (related = same {spec['related_level']})" if "related" in spec["comparison_sets"] else ""
+                rel += " (related_subcategory = same subcategory; related_category = same category)" \
+                    if {"related_subcategory", "related_category"} & set(spec["comparison_sets"]) else ""
                 g = spec["group"]
                 by = (f"; lines: {', '.join(g['overlay'])}" if g.get("overlay")
                       else f"; lines by {' x '.join(g['group_by'])}" if g.get("group_by") else "")
@@ -506,7 +509,7 @@ def template_summary_lines(cfg) -> list:
     return lines
 
 
-def item_instance_caption(items: pd.DataFrame, method: str, subject: str = None, n_subjects=None) -> str:
+def item_instance_caption(items: pd.DataFrame, method: str, subject: str = None, n_subjects=None, sort_note=None) -> str:
     """Caption for a validation matrix: what a row / column / cell is and how many item instances each item has."""
     if "n_item_instances" in items:
         counts = items.set_index("item")["n_item_instances"]
@@ -527,24 +530,27 @@ def item_instance_caption(items: pd.DataFrame, method: str, subject: str = None,
                 "from that fold's training runs. Cell: Fisher z of r, both vectors inside template j's category mask "
                 "and weighted by j's weights. Items with no item instance in the held-out run(s) have no row.")
     tail = f" Mean over {n_subjects} subjects (aligned by item and item instance number)." if n_subjects else ""
-    return f"{what} {pres}.{tail} Sorted by category > subcategory > item > item instance."
+    return f"{what} {pres}.{tail} " + (sort_note or "Sorted by category > subcategory > item name > item instance.")
 
 
 def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
-    """target / related / others per method x level: mean +- SEM over item instances (subject) or subjects (group)."""
-    comps = ["target", "related", "others"]
+    """target / related_subcategory / related_category / others per method x level: mean +- SEM over item
+    instances (subject) or subjects (group). Older outputs with a single "related" set are drawn as they are."""
+    order = ["target", "related_subcategory", "related_category", "related", "others"]
+    comps = [c for c in order if c in set(summary["comparison"])]
     rank = {"kim2020": 0, "cv": 1}
     groups = sorted(summary[["method", "level"]].drop_duplicates().itertuples(index=False, name=None),
                     key=lambda g: (rank.get(g[0], 9), g[1] != "item", g[1]))
     width = 0.8 / len(comps)
+    labels = {"related_subcategory": "same subcategory", "related_category": "same category"}
     for j, comp in enumerate(comps):
         for i, (m, lv) in enumerate(groups):
             vals = summary[(summary["method"] == m) & (summary["level"] == lv) & (summary["comparison"] == comp)]["z"].dropna()
             if vals.empty:
                 continue
-            x = i + (j - 1) * width
+            x = i + (j - (len(comps) - 1) / 2) * width
             ax.bar(x, vals.mean(), width * 0.9, yerr=vals.sem() if len(vals) > 1 else None, capsize=2, color=f"C{j}",
-                   label=comp if i == 0 else None)
+                   label=labels.get(comp, comp) if i == 0 else None)
             if by_subject:
                 ax.scatter(np.full(len(vals), x), vals, s=6, color="k", zorder=3)
     ax.axhline(0, color="k", lw=0.8)
@@ -553,8 +559,77 @@ def validation_bars(ax, summary: pd.DataFrame, by_subject: bool):
     ax.legend(fontsize=7, frameon=False)
 
 
-def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
-    """One page per method x level: kim2020 one item instance x item instance matrix; cv one matrix per fold."""
+def presentation_order(cfg, subjects, items: pd.DataFrame):
+    """Where each item instance was shown: run (1.. in run_id order among the subject's template runs) and
+    position (0.. by onset among that run's template events), rebuilt from the master spreadsheet the way the
+    template stage numbers item instances (item instance k = the k-th template run, by run_id, that shows the
+    item). Over several subjects: the most common (run, position) per item instance, with `agreement` = the
+    fraction of subjects shown it there. -> DataFrame, or None without the master spreadsheet."""
+    from workflows.template_rsa import item_column, select
+
+    path = cfg.get("event_extraction", {}).get("output_file")
+    if not path or not os.path.exists(path):
+        return None
+    df = read_master_spreadsheet(path)
+    subjects = [str(s) for s in subjects or []]
+    df = df[df["subject"].astype(str).isin(subjects)] if subjects else df
+    ev = select(df, cfg["template_rsa"]["templates"]["events"])
+    if ev.empty:
+        return None
+    col = item_column(cfg)
+    ev = ev.assign(item=ev[col].astype(str), run_id=ev["run_id"].astype(str)).sort_values(["subject", "run_id", "onset"])
+    ev["run"] = ev.groupby("subject")["run_id"].rank(method="dense").astype(int)
+    ev["position"] = ev.groupby(["subject", "run_id"]).cumcount()
+    first = ev.drop_duplicates(["subject", "item", "run_id"])  # repeats within a run: the first showing
+    first = first.assign(item_instance=first.groupby(["subject", "item"])["run_id"].rank(method="dense").astype(int))
+    counts = first.groupby(["item", "item_instance", "run", "position"]).size().rename("n").reset_index()
+    total = first.groupby(["item", "item_instance"]).size().rename("n_subjects")
+    best = counts.sort_values("n", ascending=False).drop_duplicates(["item", "item_instance"]).join(total, on=["item", "item_instance"])
+    best["agreement"] = best["n"] / best["n_subjects"]
+    cat = items.astype({"item": str}).set_index("item")["category"]
+    best["category"] = best["item"].map(cat)
+    return best[best["category"].notna()].drop(columns="n").sort_values(["run", "position"]).reset_index(drop=True)
+
+
+def temporal_item_order(order: pd.DataFrame, items: pd.DataFrame) -> list:
+    """Items sorted by category > subcategory > when first shown (run, then position in the run; from
+    presentation_order). Items without a known presentation go last within their subcategory, by name."""
+    first = order.sort_values(["run", "position"]).drop_duplicates("item").set_index("item")  # earliest showing
+    info = items.astype({"item": str}).copy()
+    info["run"] = info["item"].map(first["run"]).fillna(np.inf)
+    info["position"] = info["item"].map(first["position"]).fillna(np.inf)
+    cols = [c for c in ("category", "subcategory") if c in info] + ["run", "position", "item"]
+    return info.sort_values(cols)["item"].tolist()
+
+
+def matrix_item_order(cfg, items: pd.DataFrame, subjects):
+    """(item order, caption note) for the validation matrices: template_rsa.validation.matrix_order
+    "temporal" (default; the order the items were first shown, from the master spreadsheet) or "alphabetical"."""
+    alphabetical = (None, "Sorted by category > subcategory > item name > item instance.")
+    if cfg["template_rsa"]["validation"].get("matrix_order", "temporal") == "alphabetical":
+        return alphabetical
+    try:
+        order = presentation_order(cfg, subjects, items)
+    except Exception as err:  # the temporal order is a display choice; never fail the report over it
+        print(f"  (!) temporal matrix order unavailable ({err}); sorting alphabetically")
+        return alphabetical
+    if order is None or order.empty:
+        print("  (i) temporal matrix order needs the master spreadsheet (event_extraction.output_file); sorting alphabetically")
+        return alphabetical
+    note = ("Sorted by category > subcategory > when each item was first shown (first template run, by onset) > item "
+            "instance (run), so items shown one after another are neighbours; similarity carried over between "
+            "trials shown close in time appears as lines right next to the diagonal squares. Order from the master "
+            "spreadsheet")
+    if order["n_subjects"].max() > 1:
+        first = order[order["run"] == order["run"].min()]
+        note += (f", as most subjects saw it ({first['agreement'].mean():.0%} of subjects per item on average)")
+    return temporal_item_order(order, items), note + ". Set template_rsa.validation.matrix_order to \"alphabetical\" " \
+        "when the order is randomized per run or subject."
+
+
+def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None, item_order=None, sort_note=None):
+    """One page per method x level: kim2020 one item instance x item instance matrix; cv one matrix per fold.
+    item_order: items in display order (matrix_item_order); None = alphabetical within category > subcategory."""
     for (method, level), part in cells.groupby(["method", "level"], sort=False):
         folds = sorted(part["fold"].astype(str).unique(), key=lambda f: (f != "all", int(f) if f.isdigit() else 0))
         n = len(folds)
@@ -570,9 +645,9 @@ def matrix_pages(pdf, roi, cells, items, title_prefix, n_subjects=None):
             nr = sub[["row_item", "row_item_instance"]].drop_duplicates().shape[0]
             nc = sub[["col_item", "col_item_instance"]].drop_duplicates().shape[0]
             label = "all template runs" if fold == "all" else f"fold {fold}"
-            draw_validation_matrix(ax, sub, items, f"{label}: {nr} x {nc}", labels=n <= 4)
+            draw_validation_matrix(ax, sub, items, f"{label}: {nr} x {nc}", labels=n <= 4, item_order=item_order)
             ax.set_box_aspect(1)
-        caption = item_instance_caption(items, method, n_subjects=n_subjects)
+        caption = item_instance_caption(items, method, n_subjects=n_subjects, sort_note=sort_note)
         if n_subjects is not None and "n_subjects" in part:
             caption += f" Subjects per cell: {int(part['n_subjects'].min())}-{int(part['n_subjects'].max())}."
         fig.text(0.07, 0.15, "\n".join(textwrap.wrap(caption, 120)), fontsize=7.5, va="top")
@@ -701,7 +776,7 @@ def template_section(pdf, cfg, output_dir, subjects, subject=None):
                      fontsize=13, weight="bold", x=0.07, ha="left", y=0.97)
         gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.1], left=0.1, right=0.95, top=0.9, bottom=0.08, hspace=0.45)
         validation_bars(fig.add_subplot(gs[0]), val, by_subject=not subject)
-        fig.axes[-1].set_title("target / related / others (mean +- SEM over "
+        fig.axes[-1].set_title("target / same subcategory / same category / others (mean +- SEM over "
                                + ("item instances" if subject else "subjects; dots = subjects") + ")", fontsize=9, loc="left")
         ax = fig.add_subplot(gs[1])
         ax.axis("off")
@@ -728,7 +803,8 @@ def template_section(pdf, cfg, output_dir, subjects, subject=None):
                            [("Subjects where target <= others (check these)", flagged),
                             ("Every subject", wide.reset_index())], max_rows=60)
         if cells is not None and len(cells):
-            matrix_pages(pdf, roi, cells, items, who, n_subjects=n_sub)
+            item_order, sort_note = matrix_item_order(cfg, items, [subject] if subject else subjects)
+            matrix_pages(pdf, roi, cells, items, who, n_subjects=n_sub, item_order=item_order, sort_note=sort_note)
 
 
 def fidelity_section(pdf, cfg, output_dir, subject=None):
